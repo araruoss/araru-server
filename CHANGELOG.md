@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to Araru Server are documented here. Releases follow [Semantic Versioning](https://semver.org/) and are generated from Conventional Commits.
+
 ## Unreleased
 
 ### Separação do Araru Server
