@@ -1,0 +1,41 @@
+{
+  "name": "@araru/server",
+  "version": "2.0.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon server/server.js",
+    "start": "node server/server.js",
+    "build": "node --check server/server.js && node --check server/app.js",
+    "test": "node scripts/run-tests.js",
+    "lint": "node scripts/lint.js",
+    "migrate": "node scripts/migrate.js",
+    "health": "node scripts/health.js",
+    "admin:reset-password": "node scripts/reset-admin-password.js",
+    "benchmark:catalog:1k": "BENCHMARK_BOOKS=1000 node scripts/benchmark-catalog.js",
+    "benchmark:catalog": "node scripts/benchmark-catalog.js",
+    "rename:pdfs": "node scripts/renomear-pdfs.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
+    "googleapis": "^176.0.0",
+    "jszip": "^3.10.1",
+    "mobi": "^0.0.1",
+    "ioredis": "^5.4.1",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.13.1",
+    "unrar-js": "^0.2.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0",
+    "supertest": "^7.2.2"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

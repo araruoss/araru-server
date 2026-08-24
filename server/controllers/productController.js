@@ -1,0 +1,17 @@
+import { decideDuplicate, deleteView, duplicateCandidates, exportMetadata, getPreferences, getSeries, importMetadata, listFlags, listSavedViews, listSeries, readerMetricSummary, recordReaderMetric, savePreferences, saveView, syncSeries } from '../services/productService.js';
+const profile=(req)=>req.profileId||req.cookies?.biblioteca_profile||'default';
+const respond=(handler)=>(req,res,next)=>Promise.resolve(handler(req,res)).catch(next);
+export const getViews=respond(async(req,res)=>res.json({data:await listSavedViews(profile(req))}));
+export const postView=respond(async(req,res)=>res.status(201).json({data:await saveView(profile(req),req.body)}));
+export const removeView=respond(async(req,res)=>res.status(await deleteView(profile(req),req.params.id)?204:404).end());
+export const getPrefs=respond(async(req,res)=>res.json({data:await getPreferences(profile(req),req.query.workId)}));
+export const putPrefs=respond(async(req,res)=>res.json({data:await savePreferences(profile(req),req.body,req.query.workId)}));
+export const getSeriesList=respond(async(_req,res)=>{await syncSeries();res.json({data:await listSeries()});});
+export const getSeriesDetail=respond(async(req,res)=>{const data=await getSeries(req.params.id);return data?res.json({data}):res.status(404).json({message:'Série não encontrada.'});});
+export const getFeatureFlags=respond(async(_req,res)=>res.json({data:await listFlags()}));
+export const postReaderMetric=respond(async(req,res)=>{await recordReaderMetric({...req.body,profileId:profile(req)});res.status(202).json({message:'Métrica registrada.'});});
+export const getReaderMetrics=respond(async(_req,res)=>res.json({data:await readerMetricSummary()}));
+export const getDuplicates=respond(async(_req,res)=>res.json({data:await duplicateCandidates()}));
+export const postDuplicateDecision=respond(async(req,res)=>res.json({data:await decideDuplicate({...req.body,apply:req.query.apply==='true'})}));
+export const getMetadataExport=respond(async(req,res)=>{const result=await exportMetadata(req.query.format);res.type(result.mime).set('Content-Disposition',`attachment; filename="araru-metadata.${result.extension}"`).send(result.body);});
+export const postMetadataImport=respond(async(req,res)=>res.json({data:await importMetadata(req.body,{apply:req.query.apply==='true'})}));

@@ -1,0 +1,14 @@
+openapi: 3.1.0
+info:
+  title: Araru Server API
+  version: 2.0.0
+  description: Initial contract entrypoint. Endpoint schemas will be expanded without requiring client imports from server source.
+servers:
+  - url: http://localhost:3001/api
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Server is healthy
