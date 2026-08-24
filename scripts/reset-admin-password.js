@@ -8,8 +8,8 @@ const force = process.argv.includes('--force');
 try {
   const admin = await getUserByUsername('admin');
   if (!admin) {
-    console.error('Usuário admin não encontrado. Inicie a aplicação uma vez para criar o administrador.');
-    process.exitCode = 1;
+    console.log('Nenhum administrador foi criado ainda. Conclua a configuração inicial em http://localhost:8080.');
+    console.log('Depois do setup, este comando consulta uma senha temporária pendente sem alterar credenciais.');
   } else if (!force && !admin.must_change_password) {
     console.log('A configuração inicial do administrador já foi concluída. Nenhuma senha foi alterada.');
     console.log('Para uma rotação administrativa intencional, execute: make admin-password-force');
