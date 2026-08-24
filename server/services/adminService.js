@@ -26,7 +26,7 @@ export async function adminOverview() {
     rows: catalogRows
   };
   return {
-    server: { status: 'ok', version: process.env.npm_package_version || '2.0.0', environment: process.env.NODE_ENV || 'development', ...obterMetricasRuntime() },
+    server: { status: 'ok', version: process.env.npm_package_version || '0.1.0', environment: process.env.NODE_ENV || 'development', ...obterMetricasRuntime() },
     users: Number(users.rows[0]?.total || 0), profiles: Number(profiles.rows[0]?.total || 0),
     libraries: new Set(activeCatalog.map((row) => row.source)).size, catalog: catalogSummary,
     database, redis,
