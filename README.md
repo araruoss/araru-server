@@ -29,6 +29,16 @@ The API listens on `http://localhost:3001`. Configure Araru Web independently th
 
 PostgreSQL is the source of truth; Redis stores cache and ephemeral coordination. Runtime data belongs in `storage/` and is never committed. Build the container with `docker build -t araru-server .`; releases publish `ghcr.io/araruoss/araru-server`.
 
+### Development Compose security
+
+`docker-compose.dev.yml` keeps PostgreSQL and Redis on the internal Docker network and requires `POSTGRES_PASSWORD` and `REDIS_PASSWORD` from `.env`. It does not publish service ports by default. For intentional host access, use the localhost-only override:
+
+```bash
+docker compose -f docker-compose.dev.yml -f docker-compose.debug.yml up
+```
+
+Never commit the values from `.env`; use long, unique local credentials. Non-development/test startup rejects empty or known weak database and Redis credentials.
+
 ### Catalog and reader contracts
 
 Library files are identified by a content hash when the provider exposes one (or by a streamed SHA-256 for local files). The catalog pipeline records discovery, metadata, cover and reader-manifest state in PostgreSQL; failures are explicit and retryable. The versioned reader contract is `GET /api/v1/works/:id/manifest`, while content and page resources remain streamed through the existing `/api/v1/works/:id/content` and `/pages` endpoints. Full-text search is provided by `GET /api/v1/search?q=...` and covers works, filenames, tags, authors and series.
