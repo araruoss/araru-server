@@ -16,11 +16,13 @@ const configuredOrigins = String(process.env.ALLOWED_ORIGINS || process.env.FRON
 export const env = {
   port: Number(process.env.PORT || 3001),
   databaseUrl: process.env.DATABASE_URL || '',
+  databasePassword: process.env.DATABASE_PASSWORD || '',
   databaseSsl: String(process.env.DATABASE_SSL || 'false') === 'true',
   databasePoolMax: Number(process.env.DATABASE_POOL_MAX || 10),
   databaseIdleTimeoutMs: Number(process.env.DATABASE_IDLE_TIMEOUT_MS || 30000),
   databaseConnectionTimeoutMs: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS || 5000),
   redisUrl: process.env.REDIS_URL || '',
+  redisPassword: process.env.REDIS_PASSWORD || '',
   redisEnabled: String(process.env.REDIS_ENABLED || 'true') === 'true',
   redisKeyPrefix: process.env.REDIS_KEY_PREFIX || 'araru:',
   frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, ''),
@@ -94,6 +96,17 @@ env.r2 = {
 env.r2Configured = Boolean(env.r2.endpoint && env.r2.accessKeyId && env.r2.secretAccessKey && env.r2.bucket);
 
 export function validateEnvironment() {
+  const localDevelopment = ['development', 'test'].includes(String(process.env.NODE_ENV || 'development').toLowerCase());
+  const weakCredentials = new Set(['araru', 'password', 'postgres', 'redis', 'changeme', 'change-me', '']);
+  let databasePassword = env.databasePassword;
+  let redisPassword = env.redisPassword;
+  try { databasePassword ||= new URL(env.databaseUrl).password; } catch { /* URL ausente ou inválida é tratado abaixo. */ }
+  try { redisPassword ||= new URL(env.redisUrl).password; } catch { /* URL ausente ou inválida é tratado abaixo. */ }
+  const databaseUnsafe = !env.databaseUrl || weakCredentials.has(String(databasePassword).toLowerCase());
+  const redisUnsafe = env.redisEnabled && (!env.redisUrl || weakCredentials.has(String(redisPassword).toLowerCase()));
+  if (!localDevelopment && (databaseUnsafe || redisUnsafe)) {
+    throw new Error('Credenciais de banco/Redis ausentes ou fracas fora de desenvolvimento/teste.');
+  }
   if (!valorConfigurado(env.databaseUrl)) {
     logger.warn('config.database.url_missing', { expected: 'DATABASE_URL' });
   }
