@@ -32,6 +32,11 @@ test('expõe system, session e client config exclusivamente em v1', async () => 
   assert.equal((await request(app).get(`/api${'/system/info'}`)).status, 404);
 });
 
+test('NODE_ENV=test não transforma rota administrativa em endpoint público', async () => {
+  const response = await request(app).get('/api/v1/admin/security');
+  assert.equal(response.status, 401);
+});
+
 test('expõe works, filtros, content delivery e administração em v1', async () => {
   const works = await request(app).get('/api/v1/works').set('Cookie', cookie).query({ libraryId: 'local', format: 'pdf', favorite: 'false', completed: 'false', sort: 'title', order: 'asc' });
   assert.equal(works.status, 200); assert.ok(Array.isArray(works.body.items)); assert.ok(works.body.pagination);
