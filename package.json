@@ -28,7 +28,7 @@
     "dotenv": "^17.4.2",
     "express": "^4.18.3",
     "googleapis": "^176.0.0",
-    "ioredis": "^5.4.1",
+    "ioredis": "^6.0.0",
     "jszip": "^3.10.1",
     "mobi": "^0.0.1",
     "pdf-parse": "^2.4.5",
