@@ -1,0 +1,7 @@
+import { query } from '../database/postgres.js';
+
+const valid = new Set(['local', 'drive', 'r2']);
+const publicSettings = (settings = {}) => Object.fromEntries(Object.entries(settings || {}).filter(([key]) => !/secret|token|password|credential|key/i.test(key)));
+export async function listProviderSettings() { const { rows } = await query('SELECT provider,enabled,settings,updated_at AS "updatedAt" FROM storage_provider_settings ORDER BY provider'); return rows.map((row) => ({ ...row, settings: publicSettings(row.settings) })); }
+export async function saveProviderSettings(provider, input = {}, userId = null) { if (!valid.has(provider)) throw Object.assign(new Error('Invalid storage provider.'), { code: 'VALIDATION_ERROR', statusCode: 400 }); const settings = publicSettings(input.settings || {}); await query('INSERT INTO storage_provider_settings(provider,enabled,settings,updated_by) VALUES($1,$2,$3::jsonb,$4) ON CONFLICT(provider) DO UPDATE SET enabled=EXCLUDED.enabled,settings=EXCLUDED.settings,updated_by=EXCLUDED.updated_by,updated_at=NOW()', [provider, input.enabled !== false, JSON.stringify(settings), userId]); return (await listProviderSettings()).find((item) => item.provider === provider); }
+export async function deleteProviderSettings(provider) { const result = await query('DELETE FROM storage_provider_settings WHERE provider=$1', [provider]); return Boolean(result.rowCount); }

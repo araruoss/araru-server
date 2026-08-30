@@ -1,0 +1,8 @@
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
+
+const keyId = 'master-v1';
+function masterKey() { const source = process.env.ARARU_MASTER_KEY; if (!source) throw Object.assign(new Error('ARARU_MASTER_KEY é obrigatório para armazenar credenciais.'), { statusCode: 503, code: 'MASTER_KEY_MISSING' }); return Buffer.from(hkdfSync('sha256', Buffer.from(source), Buffer.from('araru'), Buffer.from('storage-credentials'), 32)); }
+export function encrypt(value, aad = '') { const nonce = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', masterKey(), nonce); cipher.setAAD(Buffer.from(String(aad))); const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]); return { version: 1, algorithm: 'aes-256-gcm', nonce: nonce.toString('base64url'), ciphertext: ciphertext.toString('base64url'), authTag: cipher.getAuthTag().toString('base64url'), keyId }; }
+export function decrypt(envelope, aad = '') { if (!envelope || envelope.algorithm !== 'aes-256-gcm' || envelope.version !== 1) throw new Error('Envelope de credencial inválido.'); const decipher = createDecipheriv('aes-256-gcm', masterKey(), Buffer.from(envelope.nonce, 'base64url')); decipher.setAAD(Buffer.from(String(aad))); decipher.setAuthTag(Buffer.from(envelope.authTag, 'base64url')); return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64url')), decipher.final()]).toString('utf8')); }
+export function mask(value) { const text = String(value || ''); return text ? `${text.slice(0, 4)}…${text.slice(-3)}` : ''; }
+export const encryptionFingerprint = () => createHash('sha256').update(String(process.env.ARARU_MASTER_KEY || '')).digest('hex').slice(0, 12);
