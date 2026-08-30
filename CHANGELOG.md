@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.2](https://github.com/araruoss/araru-server/compare/v0.2.1...v0.2.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **auth:** remove test environment authorization bypass ([d6de450](https://github.com/araruoss/araru-server/commit/d6de4508816b4839a90a60e88d82d2e5913495fe))
+* **auth:** remove test environment authorization bypass ([badabae](https://github.com/araruoss/araru-server/commit/badabae621069509ed965894ee00a7a5843681c2))
+* **docker:** harden development service exposure ([1affa58](https://github.com/araruoss/araru-server/commit/1affa5820323ec0ec87ca1cac037dd5c35319fb6))
+* **docker:** harden development service exposure ([d5dd87f](https://github.com/araruoss/araru-server/commit/d5dd87f2aa481dfe139f026439fc43331342c8ed))
+
 ## [0.2.1](https://github.com/araruoss/araru-server/compare/v0.2.0...v0.2.1) (2026-08-30)
 
 
