@@ -129,7 +129,7 @@ export async function buscarLivros(req, res, next) {
 
 export async function listarCategorias(req, res, next) {
   try {
-    const categorias = await obterCategorias();
+    const categorias = await obterCategorias({ livros: await scopedBooks(req) });
     const total = categorias.reduce((acc, categoria) => acc + categoria.total, 0);
 
     return res.json({
@@ -143,7 +143,7 @@ export async function listarCategorias(req, res, next) {
 
 export async function listarArvoreCategorias(req, res, next) {
   try {
-    const tree = await obterArvoreCategorias();
+    const tree = await obterArvoreCategorias({ livros: await scopedBooks(req) });
     return res.json({ data: tree });
   } catch (error) {
     return next(error);

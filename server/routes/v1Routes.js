@@ -39,6 +39,14 @@ import { jobCenterOverview, listJobDefinitions, listJobSchedules, saveJobSchedul
 
 const router = Router();
 const profileId = (req) => req.profileId || req.sessionContext?.activeProfile?.id || 'default';
+async function requireAccessibleWork(req, res) {
+  const work = await obterObra(req.params.id, { userId: req.user.id });
+  if (!work) {
+    res.status(404).json({ message: 'Obra nao encontrada.' });
+    return null;
+  }
+  return work;
+}
 const parseJson = (value, fallback = []) => {
   if (Array.isArray(value) || (value && typeof value === 'object')) return value;
   try { return JSON.parse(value); } catch { return fallback; }
@@ -169,10 +177,10 @@ router.get('/search', async (req, res, next) => {
 router.get('/reading/continue', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const ids = Object.entries(state.progress || {}).filter(([, value]) => Number(value?.progress ?? value ?? 0) > 0).sort((a, b) => Number(b[1]?.lastReadAt || 0) - Number(a[1]?.lastReadAt || 0)).map(([id]) => id); const items = []; for (const id of ids.slice(0, 100)) { const work = await obterObra(id, { userId: req.user.id }); if (work) items.push({ ...work, reading: state.progress[id] }); } return res.json({ items }); } catch (error) { return next(error); } });
 router.get('/history', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const { page, pageSize } = pagination(req.query); const items = (state.history || []).slice((page - 1) * pageSize, page * pageSize); return res.json(paged(items, page, pageSize, (state.history || []).length)); } catch (error) { return next(error); } });
 router.get('/favorites', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const { page, pageSize } = pagination(req.query); return res.json(paged(state.favorites || [], page, pageSize, (state.favorites || []).length)); } catch (error) { return next(error); } });
-router.get('/works/:id/reading-state', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); return res.json({ data: { workId: req.params.id, ...(state.progress?.[req.params.id] || {}) }, version: state.version }); } catch (error) { return next(error); } });
-router.put('/works/:id/reading-state', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const nextState = { ...state, progress: { ...state.progress, [req.params.id]: req.body?.position ? { ...req.body, updatedAt: Date.now() } : req.body }, version: req.body?.version ?? state.version }; return res.json({ data: await salvarEstadoLeitura(nextState, profileId(req)) }); } catch (error) { return next(error); } });
-router.put('/works/:id/favorite', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const favorites = [...new Set([...(state.favorites || []), req.params.id])]; return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
-router.delete('/works/:id/favorite', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const favorites = (state.favorites || []).filter((id) => id !== req.params.id); return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
+router.get('/works/:id/reading-state', async (req, res, next) => { try { if (!await requireAccessibleWork(req, res)) return; const state = await obterEstadoLeitura(profileId(req)); return res.json({ data: { workId: req.params.id, ...(state.progress?.[req.params.id] || {}) }, version: state.version }); } catch (error) { return next(error); } });
+router.put('/works/:id/reading-state', async (req, res, next) => { try { if (!await requireAccessibleWork(req, res)) return; const state = await obterEstadoLeitura(profileId(req)); const nextState = { ...state, progress: { ...state.progress, [req.params.id]: req.body?.position ? { ...req.body, updatedAt: Date.now() } : req.body }, version: req.body?.version ?? state.version }; return res.json({ data: await salvarEstadoLeitura(nextState, profileId(req)) }); } catch (error) { return next(error); } });
+router.put('/works/:id/favorite', async (req, res, next) => { try { if (!await requireAccessibleWork(req, res)) return; const state = await obterEstadoLeitura(profileId(req)); const favorites = [...new Set([...(state.favorites || []), req.params.id])]; return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
+router.delete('/works/:id/favorite', async (req, res, next) => { try { if (!await requireAccessibleWork(req, res)) return; const state = await obterEstadoLeitura(profileId(req)); const favorites = (state.favorites || []).filter((id) => id !== req.params.id); return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
 
 router.get('/home', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const { rows: recent } = await query(`SELECT * FROM works w WHERE ${scope.sql} ORDER BY w.created_at DESC LIMIT $1`, [20, ...scope.values]); return res.json({ sections: [{ type: 'continue-reading', items: state.progress || {} }, { type: 'favorites', items: state.favorites || [] }, { type: 'recently-added', items: recent }] }); } catch (error) { return next(error); } });
 router.get('/profiles', (req, res, next) => getProfiles(req, res, next));

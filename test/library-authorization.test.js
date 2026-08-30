@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { accessibleLibraryIds, filterAccessibleBooks, isAdministrator } from '../server/services/authorizationService.js';
+import { agruparCategorias, construirArvoreCategorias } from '../server/services/driveService.js';
 
 const restricted = {
   roleName: 'Reader',
@@ -26,4 +27,10 @@ test('administrator remains globally scoped', () => {
 test('catalog filtering removes a work from an unauthorized library', () => {
   const books = [{ id: 'a', source: 'library-a' }, { id: 'b', source: 'library-b' }];
   assert.deepEqual(filterAccessibleBooks(books, restricted), [books[0]]);
+});
+
+test('category views can be built strictly from the already scoped catalog', () => {
+  const categories = agruparCategorias([{ categoria: 'Allowed', subcategorias: ['One'] }]);
+  assert.deepEqual(categories.map(({ nome }) => nome), ['Allowed']);
+  assert.deepEqual(construirArvoreCategorias([{ categoria: 'Allowed', subcategorias: ['One'] }]).map(({ name }) => name), ['Allowed']);
 });
