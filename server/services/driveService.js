@@ -633,8 +633,7 @@ export async function obterLivros({ forceRefresh = false } = {}) {
   return reconciliarCatalogo();
 }
 
-export async function obterCategorias() {
-  const livros = await obterLivros();
+export function agruparCategorias(livros, categoriasPersistidas = []) {
   const categorias = livros.reduce((acc, livro) => {
     const nome = livro.categoria || env.useFallbackCategoria;
     if (!acc.has(nome)) {
@@ -651,14 +650,14 @@ export async function obterCategorias() {
     return acc;
   }, new Map());
 
-  const categoriasPersistidas = new Map((await listarCategoriasPersistidas()).map((item) => [item.nome, item]));
+  const persistidas = new Map(categoriasPersistidas.map((item) => [item.nome, item]));
 
   return [...categorias.entries()]
     .map(([nome, item]) => ({
       nome,
       total: item.total,
-      icone: categoriasPersistidas.get(nome)?.icone || 'BookOpen',
-      cor: categoriasPersistidas.get(nome)?.cor || '#0891B2',
+      icone: persistidas.get(nome)?.icone || 'BookOpen',
+      cor: persistidas.get(nome)?.cor || '#0891B2',
       subcategorias: [...item.subcategorias.entries()]
         .map(([subnome, total]) => ({ nome: subnome, total }))
         .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
@@ -666,8 +665,12 @@ export async function obterCategorias() {
     .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
 }
 
-export async function obterArvoreCategorias() {
-  const livros = await obterLivros();
+export async function obterCategorias({ livros: livrosFornecidos = null } = {}) {
+  const livros = livrosFornecidos || await obterLivros();
+  return agruparCategorias(livros, await listarCategoriasPersistidas());
+}
+
+export function construirArvoreCategorias(livros) {
   const roots = new Map();
 
   for (const livro of livros) {
@@ -689,6 +692,11 @@ export async function obterArvoreCategorias() {
     children: [...node.children.values()].map(serialize).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
   });
   return [...roots.values()].map(serialize).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+}
+
+export async function obterArvoreCategorias({ livros: livrosFornecidos = null } = {}) {
+  const livros = livrosFornecidos || await obterLivros();
+  return construirArvoreCategorias(livros);
 }
 
 export function mimeTypeDoFormato(formato = '') {
