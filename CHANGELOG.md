@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3](https://github.com/araruoss/araru-server/compare/v0.2.2...v0.2.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* **security:** close remaining library scope gaps ([437b7cf](https://github.com/araruoss/araru-server/commit/437b7cfb0eaf0fc277efb87337fa2285d1bb772c))
+* **security:** close remaining library scope gaps ([161f8be](https://github.com/araruoss/araru-server/commit/161f8beb5ff271f77222f1cb493767e60067eef4))
+
 ## [0.2.2](https://github.com/araruoss/araru-server/compare/v0.2.1...v0.2.2) (2026-08-30)
 
 
