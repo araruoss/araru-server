@@ -10,6 +10,7 @@
     "worker": "node server/worker.js",
     "build": "node --check server/server.js && node --check server/app.js",
     "test": "node scripts/run-tests.js",
+    "security:test": "node --test test/*security*.test.js test/library-authorization.test.js test/docker-config.test.js",
     "lint": "node scripts/lint.js",
     "migrate": "node scripts/migrate.js",
     "health": "node scripts/health.js",
