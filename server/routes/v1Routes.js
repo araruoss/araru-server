@@ -33,7 +33,7 @@ import { getSecurityConfig, saveSecurityConfig, securityOverview } from '../serv
 import { getSettings, resetSettings, setSettings, settingsSchema } from '../services/settingsService.js';
 import { listRoles, getRole, saveRole, deleteRole } from '../services/roleService.js';
 import { permissionGroups } from '../services/permissionRegistry.js';
-import { effectiveAccess, invalidateAuthorization } from '../services/authorizationService.js';
+import { buildLibraryScope, buildWorkScope, effectiveAccess, invalidateAuthorization } from '../services/authorizationService.js';
 import { listProviders, listConnections, getConnection, saveConnection, testConnection, deleteConnection, listSources, saveSource, deleteSource } from '../services/connectionService.js';
 import { jobCenterOverview, listJobDefinitions, listJobSchedules, saveJobSchedule, deleteJobSchedule, runJob, jobExecution } from '../services/jobCenterService.js';
 
@@ -78,12 +78,13 @@ router.get('/auth/me', async (req, res, next) => { if (!req.sessionContext) retu
 
 router.get('/libraries', async (_req, res, next) => {
   try {
-    const { rows } = await query(`SELECT COALESCE(storage_provider, source) AS id, COALESCE(storage_provider, source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE status='active')::int AS "activeFileCount" FROM library_files GROUP BY 1 ORDER BY 1`);
+    const scope = await buildLibraryScope(_req.user.id, { alias: 'lf' });
+    const { rows } = await query(`SELECT COALESCE(lf.storage_provider, lf.source) AS id, COALESCE(lf.storage_provider, lf.source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM library_files lf WHERE ${scope.sql} GROUP BY 1 ORDER BY 1`, scope.values);
     return res.json({ items: rows, pagination: { page: 1, pageSize: rows.length || 1, total: rows.length, pages: rows.length ? 1 : 0 } });
   } catch (error) { return next(error); }
 });
 router.get('/libraries/:id', async (req, res, next) => {
-  try { const { rows } = await query(`SELECT COALESCE(storage_provider, source) AS id, COALESCE(storage_provider, source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE status='active')::int AS "activeFileCount" FROM library_files WHERE COALESCE(storage_provider, source)=$1 GROUP BY 1`, [req.params.id]); return rows[0] ? res.json({ data: rows[0] }) : next(errors.notFound('Library not found.')); } catch (error) { return next(error); }
+  try { const scope = await buildLibraryScope(req.user.id, { alias: 'lf', offset: 1 }); const { rows } = await query(`SELECT COALESCE(lf.storage_provider, lf.source) AS id, COALESCE(lf.storage_provider, lf.source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM library_files lf WHERE COALESCE(lf.storage_provider, lf.source)=$1 AND ${scope.sql} GROUP BY 1`, [req.params.id, ...scope.values]); return rows[0] ? res.json({ data: rows[0] }) : next(errors.notFound('Library not found.')); } catch (error) { return next(error); }
 });
 
 router.get('/works', async (req, res, next) => {
@@ -94,6 +95,9 @@ router.get('/works', async (req, res, next) => {
     const values = [];
     const filters = [];
     const profile = profileId(req);
+    const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: values.length });
+    values.push(...scope.values);
+    filters.push(scope.sql);
     if (search) { values.push(`%${search}%`); filters.push(`(w.canonical_title ILIKE $${values.length} OR w.authors::text ILIKE $${values.length} OR w.description ILIKE $${values.length})`); }
     if (req.query.libraryId) { values.push(String(req.query.libraryId)); filters.push(`EXISTS (SELECT 1 FROM work_files wf0 JOIN library_files lf0 ON lf0.id=wf0.file_id WHERE wf0.work_id=w.id AND COALESCE(lf0.storage_provider,lf0.source)=$${values.length})`); }
     if (req.query.author) { values.push(`%${String(req.query.author)}%`); filters.push(`w.authors::text ILIKE $${values.length}`); }
@@ -112,8 +116,8 @@ router.get('/works', async (req, res, next) => {
     return res.json(paged(rows.map((row) => ({ ...row, authors: parseJson(row.authors) })), page, pageSize, count.rows[0].total));
   } catch (error) { return next(error); }
 });
-router.get('/works/recent', async (req, res, next) => { try { const limit = numberParam(req.query.limit, { name: 'limit', defaultValue: 20, min: 1, max: 100 }); const { rows } = await query('SELECT w.* FROM works w ORDER BY w.created_at DESC LIMIT $1', [limit]); return res.json({ items: rows }); } catch (error) { return next(error); } });
-router.get('/works/:id', async (req, res, next) => { try { const data = await obterObra(req.params.id); return data ? res.json({ data: { ...data, reading: await obterEstadoLeitura(profileId(req)) } }) : next(errors.notFound('Work not found.')); } catch (error) { return next(error); } });
+router.get('/works/recent', async (req, res, next) => { try { const limit = numberParam(req.query.limit, { name: 'limit', defaultValue: 20, min: 1, max: 100 }); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const { rows } = await query(`SELECT w.* FROM works w WHERE ${scope.sql} ORDER BY w.created_at DESC LIMIT $1`, [limit, ...scope.values]); return res.json({ items: rows }); } catch (error) { return next(error); } });
+router.get('/works/:id', async (req, res, next) => { try { const data = await obterObra(req.params.id, { userId: req.user.id }); return data ? res.json({ data: { ...data, reading: await obterEstadoLeitura(profileId(req)) } }) : next(errors.notFound('Work not found.')); } catch (error) { return next(error); } });
 router.get('/works/:id/content', servirConteudoLivro);
 router.head('/works/:id/content', servirConteudoLivro);
 router.get('/works/:id/content/url', gerarUrlConteudoLivro);
@@ -127,13 +131,13 @@ router.post('/admin/works/:id/metadata', requireAdmin, atualizarMetadadosLivro);
 router.post('/admin/works/:id/enrich', requireAdmin, enriquecerMetadadosLivro);
 router.get('/admin/metadata/reviews', requireAdmin, listarRevisoesMetadados);
 
-router.get('/series', async (req, res, next) => { try { await syncSeries(); const all = await listSeries(); const { page, pageSize } = pagination(req.query); return res.json(paged(all.slice((page - 1) * pageSize, page * pageSize), page, pageSize, all.length)); } catch (error) { return next(error); } });
-router.get('/series/:id', async (req, res, next) => { try { const data = await getSeries(req.params.id); return data ? res.json({ data }) : next(errors.notFound('Series not found.')); } catch (error) { return next(error); } });
-router.get('/series/:id/works', async (req, res, next) => { try { const data = await getSeries(req.params.id); if (!data) return next(errors.notFound('Series not found.')); const { page, pageSize } = pagination(req.query); const items = data.volumes || []; return res.json(paged(items.slice((page - 1) * pageSize, page * pageSize), page, pageSize, items.length)); } catch (error) { return next(error); } });
+router.get('/series', async (req, res, next) => { try { await syncSeries(); const all = await listSeries(); const visible = []; for (const series of all) { if ((await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 })).sql === 'TRUE') { visible.push(series); continue; } const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 2 }); const result = await query(`SELECT 1 FROM work_series ws JOIN works w ON w.id=ws.work_id WHERE ws.series_id=$1 AND ${scope.sql} LIMIT 1`, [series.id, ...scope.values]); if (result.rows[0]) visible.push(series); } const { page, pageSize } = pagination(req.query); return res.json(paged(visible.slice((page - 1) * pageSize, page * pageSize), page, pageSize, visible.length)); } catch (error) { return next(error); } });
+router.get('/series/:id', async (req, res, next) => { try { const data = await getSeries(req.params.id); if (!data) return next(errors.notFound('Series not found.')); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const result = await query(`SELECT 1 FROM work_series ws JOIN works w ON w.id=ws.work_id WHERE ws.series_id=$1 AND ${scope.sql} LIMIT 1`, [req.params.id, ...scope.values]); return result.rows[0] ? res.json({ data }) : next(errors.notFound('Series not found.')); } catch (error) { return next(error); } });
+router.get('/series/:id/works', async (req, res, next) => { try { const data = await getSeries(req.params.id); if (!data) return next(errors.notFound('Series not found.')); const { page, pageSize } = pagination(req.query); const ids = (data.volumes || []).map((item) => item.id).filter(Boolean); const visible = []; for (const id of ids) { const work = await obterObra(id, { userId: req.user.id }); if (work) visible.push(work); } return res.json(paged(visible.slice((page - 1) * pageSize, page * pageSize), page, pageSize, visible.length)); } catch (error) { return next(error); } });
 
-router.get('/authors', async (req, res, next) => { try { const { rows } = await query('SELECT DISTINCT jsonb_array_elements_text(authors) AS name FROM works ORDER BY 1'); const { page, pageSize } = pagination(req.query); const items = rows.map((row) => ({ id: Buffer.from(row.name).toString('base64url'), name: row.name })); return res.json(paged(items.slice((page - 1) * pageSize, page * pageSize), page, pageSize, items.length)); } catch (error) { return next(error); } });
-router.get('/authors/:id/works', async (req, res, next) => { try { const name = Buffer.from(req.params.id, 'base64url').toString(); const { page, pageSize } = pagination(req.query); const count = await query('SELECT COUNT(*)::int AS total FROM works WHERE authors @> $1::jsonb', [JSON.stringify([name])]); const { rows } = await query('SELECT * FROM works WHERE authors @> $1::jsonb ORDER BY LOWER(canonical_title) LIMIT $2 OFFSET $3', [JSON.stringify([name]), pageSize, (page - 1) * pageSize]); return res.json(paged(rows, page, pageSize, count.rows[0].total)); } catch (error) { return next(error); } });
-router.get('/authors/:id', async (req, res, next) => { try { const name = Buffer.from(req.params.id, 'base64url').toString(); const result = await query('SELECT COUNT(*)::int AS total FROM works WHERE authors @> $1::jsonb', [JSON.stringify([name])]); return result.rows[0].total ? res.json({ data: { id: req.params.id, name, workCount: result.rows[0].total } }) : next(errors.notFound('Author not found.')); } catch (error) { return next(error); } });
+router.get('/authors', async (req, res, next) => { try { const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 0 }); const { rows } = await query(`SELECT DISTINCT jsonb_array_elements_text(w.authors) AS name FROM works w WHERE ${scope.sql} ORDER BY 1`, scope.values); const { page, pageSize } = pagination(req.query); const items = rows.map((row) => ({ id: Buffer.from(row.name).toString('base64url'), name: row.name })); return res.json(paged(items.slice((page - 1) * pageSize, page * pageSize), page, pageSize, items.length)); } catch (error) { return next(error); } });
+router.get('/authors/:id/works', async (req, res, next) => { try { const name = Buffer.from(req.params.id, 'base64url').toString(); const { page, pageSize } = pagination(req.query); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const count = await query(`SELECT COUNT(*)::int AS total FROM works w WHERE w.authors @> $1::jsonb AND ${scope.sql}`, [JSON.stringify([name]), ...scope.values]); const { rows } = await query(`SELECT w.* FROM works w WHERE w.authors @> $1::jsonb AND ${scope.sql} ORDER BY LOWER(w.canonical_title) LIMIT $${scope.values.length + 2} OFFSET $${scope.values.length + 3}`, [JSON.stringify([name]), ...scope.values, pageSize, (page - 1) * pageSize]); return res.json(paged(rows, page, pageSize, count.rows[0].total)); } catch (error) { return next(error); } });
+router.get('/authors/:id', async (req, res, next) => { try { const name = Buffer.from(req.params.id, 'base64url').toString(); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const result = await query(`SELECT COUNT(*)::int AS total FROM works w WHERE w.authors @> $1::jsonb AND ${scope.sql}`, [JSON.stringify([name]), ...scope.values]); return result.rows[0].total ? res.json({ data: { id: req.params.id, name, workCount: result.rows[0].total } }) : next(errors.notFound('Author not found.')); } catch (error) { return next(error); } });
 
 router.get('/search', async (req, res, next) => {
   try {
@@ -141,27 +145,28 @@ router.get('/search', async (req, res, next) => {
     if (!term) throw errors.validation('The q parameter is required.');
     const { page, pageSize } = pagination(req.query);
     const offset = (page - 1) * pageSize;
+    const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 2 });
     const count = await query(`WITH search_query AS (SELECT plainto_tsquery('simple', unaccent($1)) AS query)
       SELECT COUNT(DISTINCT w.id)::int AS total
       FROM works w CROSS JOIN search_query sq
       LEFT JOIN work_files wf ON wf.work_id=w.id
       LEFT JOIN library_files lf ON lf.id=wf.file_id
-      WHERE w.search_vector @@ sq.query OR lf.search_vector @@ sq.query OR w.canonical_title ILIKE $2`, [term, `%${term}%`]);
+      WHERE (${scope.sql}) AND (w.search_vector @@ sq.query OR lf.search_vector @@ sq.query OR w.canonical_title ILIKE $2)`, [term, `%${term}%`, ...scope.values]);
     const { rows } = await query(`WITH search_query AS (SELECT plainto_tsquery('simple', unaccent($1)) AS query), matched AS (
       SELECT w.*, GREATEST(COALESCE(ts_rank_cd(w.search_vector, sq.query), 0), COALESCE(MAX(ts_rank_cd(lf.search_vector, sq.query)), 0)) AS "searchRank"
       FROM works w CROSS JOIN search_query sq
       LEFT JOIN work_files wf ON wf.work_id=w.id
       LEFT JOIN library_files lf ON lf.id=wf.file_id
-      WHERE w.search_vector @@ sq.query OR lf.search_vector @@ sq.query OR w.canonical_title ILIKE $2
+      WHERE (${scope.sql}) AND (w.search_vector @@ sq.query OR lf.search_vector @@ sq.query OR w.canonical_title ILIKE $2)
       GROUP BY w.id, sq.query
-    ) SELECT * FROM matched ORDER BY "searchRank" DESC, LOWER(canonical_title) LIMIT $3 OFFSET $4`, [term, `%${term}%`, pageSize, offset]);
+    ) SELECT * FROM matched ORDER BY "searchRank" DESC, LOWER(canonical_title) LIMIT $${scope.values.length + 3} OFFSET $${scope.values.length + 4}`, [term, `%${term}%`, ...scope.values, pageSize, offset]);
     const { rows: series } = await query(`SELECT DISTINCT s.id, s.name FROM series s LEFT JOIN work_series ws ON ws.series_id=s.id LEFT JOIN works w ON w.id=ws.work_id CROSS JOIN (SELECT plainto_tsquery('simple', unaccent($1)) AS query) sq WHERE to_tsvector('simple', unaccent(s.name)) @@ sq.query OR s.name ILIKE $2 ORDER BY s.name LIMIT 50`, [term, `%${term}%`]);
     const { rows: authors } = await query(`SELECT DISTINCT c.id, c.name FROM creators c JOIN work_creators wc ON wc.creator_id=c.id JOIN works w ON w.id=wc.work_id WHERE to_tsvector('simple', unaccent(c.name)) @@ plainto_tsquery('simple', unaccent($1)) OR c.name ILIKE $2 ORDER BY c.name LIMIT 50`, [term, `%${term}%`]);
     return res.json({ works: paged(rows.map((row) => ({ ...row, authors: parseJson(row.authors), tags: parseJson(row.tags) })), page, pageSize, count.rows[0].total).items, series, authors });
   } catch (error) { return next(error); }
 });
 
-router.get('/reading/continue', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const ids = Object.entries(state.progress || {}).filter(([, value]) => Number(value?.progress ?? value ?? 0) > 0).sort((a, b) => Number(b[1]?.lastReadAt || 0) - Number(a[1]?.lastReadAt || 0)).map(([id]) => id); const items = []; for (const id of ids.slice(0, 100)) { const work = await obterObra(id); if (work) items.push({ ...work, reading: state.progress[id] }); } return res.json({ items }); } catch (error) { return next(error); } });
+router.get('/reading/continue', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const ids = Object.entries(state.progress || {}).filter(([, value]) => Number(value?.progress ?? value ?? 0) > 0).sort((a, b) => Number(b[1]?.lastReadAt || 0) - Number(a[1]?.lastReadAt || 0)).map(([id]) => id); const items = []; for (const id of ids.slice(0, 100)) { const work = await obterObra(id, { userId: req.user.id }); if (work) items.push({ ...work, reading: state.progress[id] }); } return res.json({ items }); } catch (error) { return next(error); } });
 router.get('/history', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const { page, pageSize } = pagination(req.query); const items = (state.history || []).slice((page - 1) * pageSize, page * pageSize); return res.json(paged(items, page, pageSize, (state.history || []).length)); } catch (error) { return next(error); } });
 router.get('/favorites', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const { page, pageSize } = pagination(req.query); return res.json(paged(state.favorites || [], page, pageSize, (state.favorites || []).length)); } catch (error) { return next(error); } });
 router.get('/works/:id/reading-state', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); return res.json({ data: { workId: req.params.id, ...(state.progress?.[req.params.id] || {}) }, version: state.version }); } catch (error) { return next(error); } });
@@ -169,7 +174,7 @@ router.put('/works/:id/reading-state', async (req, res, next) => { try { const s
 router.put('/works/:id/favorite', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const favorites = [...new Set([...(state.favorites || []), req.params.id])]; return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
 router.delete('/works/:id/favorite', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const favorites = (state.favorites || []).filter((id) => id !== req.params.id); return res.json({ data: await salvarEstadoLeitura({ ...state, favorites, version: req.body?.version ?? state.version }, profileId(req)) }); } catch (error) { return next(error); } });
 
-router.get('/home', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const { rows: recent } = await query('SELECT * FROM works ORDER BY created_at DESC LIMIT 20'); return res.json({ sections: [{ type: 'continue-reading', items: state.progress || {} }, { type: 'favorites', items: state.favorites || [] }, { type: 'recently-added', items: recent }] }); } catch (error) { return next(error); } });
+router.get('/home', async (req, res, next) => { try { const state = await obterEstadoLeitura(profileId(req)); const scope = await buildWorkScope(req.user.id, { workAlias: 'w', offset: 1 }); const { rows: recent } = await query(`SELECT * FROM works w WHERE ${scope.sql} ORDER BY w.created_at DESC LIMIT $1`, [20, ...scope.values]); return res.json({ sections: [{ type: 'continue-reading', items: state.progress || {} }, { type: 'favorites', items: state.favorites || [] }, { type: 'recently-added', items: recent }] }); } catch (error) { return next(error); } });
 router.get('/profiles', (req, res, next) => getProfiles(req, res, next));
 router.post('/profiles', requireAdmin, postProfile);
 router.put('/profiles/:id', requireAdmin, putProfile);
