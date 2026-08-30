@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { query, withTransaction } from '../database/postgres.js';
 import { isbnForms } from './metadata/isbn.js';
+import { buildWorkScope } from './authorizationService.js';
 
 const parse = (value, fallback = {}) => { if (value && typeof value === 'object') return value; try { return JSON.parse(value); } catch { return fallback; } };
 const normalize = (value = '') => String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -36,6 +37,17 @@ export async function sincronizarObras() {
   await query('DELETE FROM works WHERE id NOT IN (SELECT DISTINCT work_id FROM work_files)');
   return rows.length;
 }
-export async function listarObras() { const { rows } = await query('SELECT w.*, COUNT(wf.file_id)::int AS "fileCount" FROM works w LEFT JOIN work_files wf ON wf.work_id=w.id GROUP BY w.id ORDER BY LOWER(w.canonical_title)'); return rows.map((row) => ({ ...row, authors: parse(row.authors, []) })); }
-export async function obterObra(id) { const { rows: works } = await query('SELECT * FROM works WHERE id=$1', [id]); const work = works[0]; if (!work) return null; const { rows: files } = await query('SELECT wf.*, f.payload, f.content_hash AS "contentHash", f.hash_algorithm AS "hashAlgorithm", f.pipeline_status AS "pipelineStatus", f.pipeline_stage AS "pipelineStage", f.pipeline_error_code AS "pipelineErrorCode", f.pipeline_error AS "pipelineError", f.manifest, f.manifest_version AS "manifestVersion" FROM work_files wf JOIN library_files f ON f.id=wf.file_id WHERE wf.work_id=$1 ORDER BY wf.is_primary DESC, wf.format', [id]); return { ...work, authors: parse(work.authors, []), tags: parse(work.tags, []), files: files.map((row) => ({ ...parse(row.payload), id: row.file_id, contentHash: row.contentHash, hashAlgorithm: row.hashAlgorithm, pipelineStatus: row.pipelineStatus, pipelineStage: row.pipelineStage, pipelineErrorCode: row.pipelineErrorCode, pipelineError: row.pipelineError, manifest: parse(row.manifest, {}), manifestVersion: row.manifestVersion, formato: row.format || parse(row.payload).formato || '', workId: row.work_id, isPrimary: row.is_primary })) }; }
+export async function listarObras({ userId = null } = {}) {
+  const scope = userId ? await buildWorkScope(userId, { offset: 1 }) : { sql: 'TRUE', values: [] };
+  const { rows } = await query(`SELECT w.*, COUNT(wf.file_id)::int AS "fileCount" FROM works w LEFT JOIN work_files wf ON wf.work_id=w.id WHERE ${scope.sql} GROUP BY w.id ORDER BY LOWER(w.canonical_title)`, scope.values);
+  return rows.map((row) => ({ ...row, authors: parse(row.authors, []) }));
+}
+export async function obterObra(id, { userId = null } = {}) {
+  const scope = userId ? await buildWorkScope(userId, { offset: 1 }) : { sql: 'TRUE', values: [] };
+  const { rows: works } = await query(`SELECT * FROM works w WHERE w.id=$1 AND ${scope.sql}`, [id, ...scope.values]);
+  const work = works[0]; if (!work) return null;
+  const fileScope = userId ? await buildLibraryScope(userId, { alias: 'f', offset: 1 }) : { sql: 'TRUE', values: [] };
+  const { rows: files } = await query(`SELECT wf.*, f.payload, f.source, f.content_hash AS "contentHash", f.hash_algorithm AS "hashAlgorithm", f.pipeline_status AS "pipelineStatus", f.pipeline_stage AS "pipelineStage", f.pipeline_error_code AS "pipelineErrorCode", f.pipeline_error AS "pipelineError", f.manifest, f.manifest_version AS "manifestVersion" FROM work_files wf JOIN library_files f ON f.id=wf.file_id WHERE wf.work_id=$1 AND ${fileScope.sql} ORDER BY wf.is_primary DESC, wf.format`, [id, ...fileScope.values]);
+  return { ...work, authors: parse(work.authors, []), tags: parse(work.tags, []), files: files.map((row) => ({ ...parse(row.payload), id: row.file_id, source: row.source, contentHash: row.contentHash, hashAlgorithm: row.hashAlgorithm, pipelineStatus: row.pipelineStatus, pipelineStage: row.pipelineStage, pipelineErrorCode: row.pipelineErrorCode, pipelineError: row.pipelineError, manifest: parse(row.manifest, {}), manifestVersion: row.manifestVersion, formato: row.format || parse(row.payload).formato || '', workId: row.work_id, isPrimary: row.is_primary })) };
+}
 export async function agruparCatalogoPorObra(livros, preferredFormats = ['epub', 'mobi', 'pdf', 'cbz', 'cbr']) { const byId = new Map(livros.map((livro) => [livro.id, livro])); const { rows } = await query("SELECT wf.work_id AS \"workId\", wf.file_id AS \"fileId\", wf.format, wf.source, wf.is_primary AS \"isPrimary\" FROM work_files wf JOIN library_files f ON f.id=wf.file_id WHERE f.status='active' ORDER BY wf.work_id"); const grouped = new Map(); for (const row of rows) { const livro=byId.get(row.fileId); if (!livro) continue; if (!grouped.has(row.workId)) grouped.set(row.workId, []); grouped.get(row.workId).push({ ...livro, workId: row.workId, isPrimary: row.isPrimary }); } const consumed=new Set(), result=[]; for (const [id,files] of grouped) { const rank=(file)=>{const index=preferredFormats.indexOf(String(file.formato||'').toLowerCase());return index<0?999:index;}; files.sort((a,b)=>rank(a)-rank(b)||Number(b.fileSize||0)-Number(a.fileSize||0)); result.push({...files[0],workId:id,files,availableFormats:[...new Set(files.map((file)=>String(file.formato||'').toLowerCase()))]}); files.forEach((file)=>consumed.add(file.id)); } for (const livro of livros) if(!consumed.has(livro.id)) result.push(livro); return result; }

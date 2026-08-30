@@ -25,6 +25,7 @@ import { getPreferences } from '../services/productService.js';
 import { findBook as findBookPostgres, findBookByIsbn as findBookByIsbnPostgres, listBooksForReview as listBooksForReviewPostgres } from '../services/metadataRepository.js';
 import { registrarStorageMetric } from '../services/runtimeMetrics.js';
 import { logger } from '../services/logger.js';
+import { canAccessSource, effectiveAccess, filterAccessibleBooks } from '../services/authorizationService.js';
 
 function normalizarBusca(texto = '') {
   return texto
@@ -48,9 +49,18 @@ function contentDispositionInline(nome = 'livro', formato = '') {
   return `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(arquivo)}`;
 }
 
+async function scopedBooks(req, options = {}) {
+  const books = await obterLivros(options);
+  return filterAccessibleBooks(books, await effectiveAccess(req.user.id));
+}
+
+async function isAccessible(req, book) {
+  return Boolean(book) && await canAccessSource(req.user.id, book.source || book.fonte || book.libraryId);
+}
+
 export async function listarLivros(req, res, next) {
   try {
-    const arquivos = await obterLivros({ forceRefresh: req.query.refresh === 'true' });
+    const arquivos = await scopedBooks(req, { forceRefresh: req.query.refresh === 'true' });
     for (const livro of arquivos) {
       if (await precisaEnriquecer(livro)) {
         enfileirarEnriquecimento(livro);
@@ -68,7 +78,7 @@ export async function listarLivros(req, res, next) {
 export async function listarPorCategoria(req, res, next) {
   try {
     const categoria = normalizarBusca(req.params.categoria);
-    const livros = await obterLivros();
+    const livros = await scopedBooks(req);
     const filtrados = livros.filter((livro) => normalizarBusca(livro.categoria) === categoria);
 
     return res.json({ data: filtrados, total: filtrados.length });
@@ -80,7 +90,7 @@ export async function listarPorCategoria(req, res, next) {
 export async function buscarLivros(req, res, next) {
   try {
     const termo = normalizarBusca(req.query.q);
-    const livros = await obterLivros();
+    const livros = await scopedBooks(req);
     const idsIndexados = termo ? await buscarIdsIndexados(termo) : [];
     const ordemIndexada = new Map(idsIndexados.map((id, index) => [id, index]));
     const filtrados = termo
@@ -155,9 +165,9 @@ export async function buscarLivroPorIsbn(req, res, next) {
 
 export async function listarMetadadosLivro(req, res, next) {
   try {
-    const livros = await obterLivros();
+    const livros = await scopedBooks(req);
     const livroAtual = livros.find((item) => item.id === req.params.id);
-    const livro = livroAtual || await findBookPostgres(req.params.id);
+    const livro = livroAtual;
 
     if (!livro) {
       return res.status(404).json({ message: 'Livro nao encontrado.' });
@@ -189,7 +199,7 @@ export async function servirConteudoLivro(req, res, next) {
     const abortController = new AbortController();
     req.once('aborted', () => abortController.abort());
     const conteudo = await obterConteudoLivro(req.params.id, { range: req.headers.range, signal: abortController.signal });
-    if (!conteudo) {
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) {
       return res.status(404).json({ message: 'Livro nao encontrado.' });
     }
 
@@ -254,7 +264,7 @@ export async function servirConteudoLivro(req, res, next) {
 export async function gerarUrlConteudoLivro(req, res, next) {
   try {
     const conteudo = await obterConteudoLivro(req.params.id);
-    if (!conteudo) return res.status(404).json({ message: 'Livro nao encontrado.' });
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) return res.status(404).json({ message: 'Livro nao encontrado.' });
     if (!conteudo.storageProvider?.signedReadUrl) return res.status(501).json({ message: 'Entrega assinada não suportada por este provider.' });
     const url = await conteudo.storageProvider.signedReadUrl(conteudo.storageKey);
     return res.json({ url, expiresIn: conteudo.storageProvider.signedUrlTtl });
@@ -263,6 +273,8 @@ export async function gerarUrlConteudoLivro(req, res, next) {
 
 export async function listarPaginasLeitura(req, res, next) {
   try {
+    const conteudo = await obterConteudoLivro(req.params.id, { preferirStream: true });
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) return res.status(404).json({ message: 'Livro nao encontrado.' });
     const paginas = await listarPaginasLivro(req.params.id);
     if (!paginas) return res.status(422).json({ message: 'Paginação indisponível para este arquivo.' });
     return res.json(paginas);
@@ -271,6 +283,8 @@ export async function listarPaginasLeitura(req, res, next) {
 
 export async function obterManifestoLeituraController(req, res, next) {
   try {
+    const conteudo = await obterConteudoLivro(req.params.id, { preferirStream: true });
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) return res.status(404).json({ message: 'Livro nao encontrado.' });
     const manifest = await obterManifestoLeitura(req.params.id);
     if (!manifest) return res.status(404).json({ message: 'Livro nao encontrado.' });
     const etag = `"${createHash('sha256').update(JSON.stringify(manifest)).digest('hex')}"`;
@@ -281,6 +295,8 @@ export async function obterManifestoLeituraController(req, res, next) {
 
 export async function servirPaginaLeitura(req, res, next) {
   try {
+    const conteudo = await obterConteudoLivro(req.params.id, { preferirStream: true });
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) return res.status(404).end();
     const pagina = await obterPaginaLivro(req.params.id, req.params.page);
     if (!pagina) return res.status(404).end();
     return res.type(pagina.mimeType).set('X-Total-Paginas', String(pagina.total)).set('Cache-Control', 'private, max-age=300').send(pagina.data);
@@ -289,6 +305,8 @@ export async function servirPaginaLeitura(req, res, next) {
 
 export async function servirRecursoMobi(req, res, next) {
   try {
+    const conteudo = await obterConteudoLivro(req.params.id, { preferirStream: true });
+    if (!conteudo || !(await isAccessible(req, conteudo.livro))) return res.status(404).end();
     const recurso = await obterRecursoMobi(req.params.id, req.params.recindex);
     if (!recurso) return res.status(404).end();
     return res.type(recurso.mimeType).set('Cache-Control', 'private, max-age=3600').send(recurso.data);
@@ -297,6 +315,8 @@ export async function servirRecursoMobi(req, res, next) {
 
 export async function servirCapaLivro(req, res, next) {
   try {
+    const obra = await obterConteudoLivro(req.params.id, { preferirStream: true });
+    if (!obra || !(await isAccessible(req, obra.livro))) return res.status(404).end();
     const capa = await obterCapaLivro(req.params.id);
     if (!capa) return res.status(404).end();
     const etag = `"${createHash('sha256').update(capa.data).digest('hex')}"`;
