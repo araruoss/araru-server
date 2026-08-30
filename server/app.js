@@ -3,9 +3,7 @@ import cors from 'cors';
 import express from 'express';
 import { env, hasDriveConfig, hasGoogleApiKey, hasGoogleCredentials, validateEnvironment } from './config/drive.js';
 import { prepararBibliotecaLocal } from './services/driveService.js';
-import authRoutes from './routes/authRoutes.js';
-import livrosRoutes from './routes/livrosRoutes.js';
-import { configureAccess, createRateLimiter, securityHeaders } from './middleware/security.js';
+import { configureAccessV1, createDynamicRateLimiter, createRateLimiter, requireAdmin, securityHeaders } from './middleware/security.js';
 import { metricsMiddleware, obterMetricasRuntime, registrarErro } from './services/runtimeMetrics.js';
 import { obterResumoIndice } from './services/libraryIndexService.js';
 import { estadoObservadorBiblioteca } from './services/libraryWatcher.js';
@@ -17,6 +15,9 @@ import { historicoTrabalhos } from './services/backgroundJobs.js';
 import { userCount } from './services/userAuthService.js';
 import { checkPostgres } from './database/postgres.js';
 import { checkRedis } from './services/redisService.js';
+import { storageHealth } from './storage/index.js';
+import v1Routes from './routes/v1Routes.js';
+import { v1ErrorResponse } from './http/apiErrors.js';
 
 const errorCodes = {
   400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN', 404: 'NOT_FOUND',
@@ -63,21 +64,30 @@ export async function createApp() {
   app.use(express.json());
   app.use(cookieParser());
   app.use(metricsMiddleware);
-  if (env.rateLimitEnabled) {
-    app.use('/api', createRateLimiter({
-      max: env.apiRateLimitPerMinute,
-      windowMs: env.rateLimitWindowMs
-    }));
-  }
-  await configureAccess(app, {
+  app.use('/api/v1', createDynamicRateLimiter('api'));
+  await configureAccessV1(app, {
     secret: env.appAccessSecret,
     sessionSeconds: env.accessSessionSeconds,
     secureCookies: env.secureCookies,
     sameSite: env.cookieSameSite
   });
+  app.get('/health/details', (req, res, next) => {
+    if (!req.user) return res.status(401).json({ message: 'Autenticação necessária.' });
+    return requireAdmin(req, res, next);
+  }, async (req, res) => {
+    try {
+      const [database, redis, storage] = await Promise.all([checkPostgres(), checkRedis(), storageHealth()]);
+      return res.json({ application: 'Araru Server', status: 'ok', runtime: obterMetricasRuntime(), mock: env.useMockData,
+        database, redis, storage, googleDriveEnabled: env.enableGoogleDrive, googleDriveConfigured: hasDriveConfig(),
+        googleDriveAuthenticated: hasGoogleCredentials(), googleDriveApiKeyConfigured: hasGoogleApiKey(),
+        driveFoldersConfig: env.driveFoldersConfigPath, localLibraryDir: env.localLibraryDir,
+        catalog: await obterResumoIndice(), metadataQueue: estadoFilaEnriquecimento(), watcher: estadoObservadorBiblioteca(),
+        jobs: estadoJobsManutencao(), recentJobs: await historicoTrabalhos({ limit: 10 }), driveSync: await obterEstadoSincronizacao() });
+    } catch (error) { return res.status(503).json({ status: 'degraded', database: { healthy: false, error: error.message } }); }
+  });
   app.use(env.localFilesRoute, express.static(env.localLibraryDir, { index: false }));
 
-  app.get('/api/health', async (req, res) => {
+  app.get('/health', async (req, res) => {
     res.json({
       application: 'Araru Server',
       status: 'ok',
@@ -85,28 +95,16 @@ export async function createApp() {
       accessProtected: Boolean(env.appAccessSecret) || Boolean(await userCount())
     });
   });
-
-  app.get('/api/health/details', async (req, res) => {
-    try {
-    const [database, redis] = await Promise.all([checkPostgres(), checkRedis()]);
-    return res.json({
-      application: 'Araru Server', status: 'ok', runtime: obterMetricasRuntime(), mock: env.useMockData,
-      database, redis,
-      googleDriveEnabled: env.enableGoogleDrive,
-      googleDriveConfigured: hasDriveConfig(),
-      googleDriveAuthenticated: hasGoogleCredentials(),
-      googleDriveApiKeyConfigured: hasGoogleApiKey(),
-      driveFoldersConfig: env.driveFoldersConfigPath,
-      localLibraryDir: env.localLibraryDir,
-      catalog: await obterResumoIndice(), metadataQueue: estadoFilaEnriquecimento(),
-      watcher: estadoObservadorBiblioteca(), jobs: estadoJobsManutencao(), recentJobs: await historicoTrabalhos({ limit: 10 })
-      ,driveSync: await obterEstadoSincronizacao()
-    });
-    } catch (error) { return res.status(503).json({ status: 'degraded', database: { healthy: false, error: error.message } }); }
+  app.get('/live', (_req, res) => res.json({ status: 'ok', liveness: true }));
+  app.get('/ready', async (_req, res) => {
+    const [database, redis, storage] = await Promise.all([checkPostgres(), checkRedis(), storageHealth()]);
+    const redisRequired = env.redisEnabled;
+    const storageReady = Object.values(storage).every((provider) => provider.healthy !== false);
+    const ready = database.healthy && (!redisRequired || redis.healthy) && storageReady;
+    return res.status(ready ? 200 : 503).json({ status: ready ? 'ok' : 'degraded', readiness: ready, database, redis, storage });
   });
 
-  app.use('/api/auth', authRoutes);
-  app.use('/api', livrosRoutes);
+  app.use('/api/v1', v1Routes);
 
   // Instalações antigas registravam o PWA na porta da API. Este worker limpa
   // apenas esse estado legado e direciona a aba para o frontend atual.
@@ -131,6 +129,7 @@ self.addEventListener('activate', (event) => {
   });
 
   app.use((req, res) => {
+    if (req.path.startsWith('/api/v1')) return res.status(404).json({ error: { code: 'ROUTE_NOT_FOUND', message: 'Route not found.', requestId: req.requestId } });
     res.status(404).json({ message: 'Rota nao encontrada.' });
   });
 
@@ -143,6 +142,7 @@ self.addEventListener('activate', (event) => {
       logger.error('http.request.failed', { requestId: req.requestId, method: req.method, path: req.originalUrl, status, error });
     }
 
+    if (req.path.startsWith('/api/v1')) return res.status(status).json(v1ErrorResponse(error, req.requestId));
     res.status(status).json({
       message,
       code: error.code || (status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'),

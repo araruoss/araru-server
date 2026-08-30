@@ -47,6 +47,30 @@ export async function listarPaginasLivro(id) {
   return { total: index.entries.length, pages: index.entries.map((entry, page) => ({ page, name: entry.name })) };
 }
 
+export async function obterManifestoLeitura(id) {
+  const conteudo = await obterConteudoLivro(id, { preferirStream: true });
+  if (!conteudo) return null;
+  const livro = conteudo.livro;
+  const formato = String(livro.formato || '').toLowerCase();
+  const paginado = ['pdf', 'cbz', 'cbr'].includes(formato);
+  const paginaData = ['cbz', 'cbr'].includes(formato) ? await listarPaginasLivro(id) : null;
+  const pageCount = paginaData?.total || Number(livro.numeroPaginas || 0) || null;
+  const contentHash = livro.contentHash || livro.fileFingerprint || `${livro.fileSize || 0}:${livro.fileMtime || ''}`;
+  return {
+    id: String(id), version: contentHash, format: formato, readingType: paginado ? 'paged' : 'reflowable',
+    contentHash, fileSize: Number(livro.fileSize || 0), title: livro.nome || livro.originalFilename || '',
+    pageCount, chapterCount: Number(livro.chapterCount || 0) || null,
+    direction: 'ltr', dimensions: { width: null, height: null },
+    resources: {
+      content: `/api/v1/works/${encodeURIComponent(id)}/content`,
+      pages: paginado ? `/api/v1/works/${encodeURIComponent(id)}/pages` : null,
+      page: paginado ? `/api/v1/works/${encodeURIComponent(id)}/pages/{page}` : null
+    },
+    pages: paginaData?.pages || [], chapters: Array.isArray(livro.chapters) ? livro.chapters : [],
+    current: { page: 0, chapter: 0, progress: 0 }, related: []
+  };
+}
+
 export async function obterPaginaLivro(id, page) {
   const pageNumber = Number(page);
   const index = await indexarArquivo(id);

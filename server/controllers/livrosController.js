@@ -16,12 +16,15 @@ import {
 import { obterCapaLivro, obterConteudoLivro, renderizarLivroCompactado } from '../services/driveService.js';
 import { createReadStream } from 'fs';
 import { stat } from 'fs/promises';
-import { listarPaginasLivro, obterPaginaLivro, obterRecursoMobi } from '../services/readerService.js';
+import { listarPaginasLivro, obterManifestoLeitura, obterPaginaLivro, obterRecursoMobi } from '../services/readerService.js';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import { buscarIdsIndexados } from '../services/libraryIndexService.js';
 import { agruparCatalogoPorObra } from '../services/workService.js';
 import { getPreferences } from '../services/productService.js';
 import { findBook as findBookPostgres, findBookByIsbn as findBookByIsbnPostgres, listBooksForReview as listBooksForReviewPostgres } from '../services/metadataRepository.js';
+import { registrarStorageMetric } from '../services/runtimeMetrics.js';
+import { logger } from '../services/logger.js';
 
 function normalizarBusca(texto = '') {
   return texto
@@ -181,7 +184,11 @@ export async function listarMetadadosLivro(req, res, next) {
 
 export async function servirConteudoLivro(req, res, next) {
   try {
-    const conteudo = await obterConteudoLivro(req.params.id);
+    const storageStarted = Date.now();
+    res.once('finish', () => registrarStorageMetric({ durationMs: Date.now() - storageStarted, bytes: Number(res.getHeader('content-length') || 0), range: Boolean(req.headers.range), failed: res.statusCode >= 400 }));
+    const abortController = new AbortController();
+    req.once('aborted', () => abortController.abort());
+    const conteudo = await obterConteudoLivro(req.params.id, { range: req.headers.range, signal: abortController.signal });
     if (!conteudo) {
       return res.status(404).json({ message: 'Livro nao encontrado.' });
     }
@@ -190,13 +197,20 @@ export async function servirConteudoLivro(req, res, next) {
     res.set('Content-Disposition', contentDispositionInline(conteudo.livro.nome, conteudo.livro.formato));
 
     if (['mobi', 'cbr'].includes(conteudo.livro.formato)) {
-      const renderizado = await renderizarLivroCompactado(conteudo, req.query.pagina);
+      let renderizado;
+      try {
+        renderizado = await renderizarLivroCompactado(conteudo, req.query.pagina);
+      } catch (error) {
+        logger.error('reader.render_failed', { requestId: req.requestId, workId: req.params.id, fileId: conteudo.livro.id, format: conteudo.livro.formato, error });
+        return res.status(422).json({ code: 'READER_RENDER_FAILED', message: 'Nao foi possivel processar este arquivo para leitura.' });
+      }
+      if (renderizado?.kind === 'too_large') return res.status(413).json({ code: 'READER_SIZE_LIMIT', message: 'Este arquivo excede o limite de leitura configurado.' });
       if (renderizado?.kind === 'html') return res.type('html').send(renderizado.data);
       if (renderizado?.kind === 'image') {
         res.set('X-Total-Paginas', String(renderizado.total));
         return res.type(renderizado.mimeType).send(renderizado.data);
       }
-      return res.status(422).json({ message: 'Nao foi possivel renderizar este arquivo.' });
+      return res.status(422).json({ code: 'READER_EMPTY_CONTENT', message: 'Nao foi possivel renderizar este arquivo.' });
     }
 
     if (conteudo.filePath) {
@@ -218,10 +232,33 @@ export async function servirConteudoLivro(req, res, next) {
       return createReadStream(conteudo.filePath).pipe(res);
     }
 
+    if (conteudo.storageProvider) {
+      const remote = await conteudo.storageProvider.stream(conteudo.storageKey, req.headers.range, conteudo.providerMetadata, { signal: abortController.signal });
+      res.set({ 'Accept-Ranges': 'bytes', 'Content-Length': String(remote.range?.length || remote.size), ...(remote.etag ? { ETag: remote.etag } : {}), ...(remote.modifiedAt ? { 'Last-Modified': new Date(remote.modifiedAt).toUTCString() } : {}), 'Cache-Control': 'private, max-age=0, must-revalidate' });
+      if (remote.range) res.status(206).set('Content-Range', `bytes ${remote.range.start}-${remote.range.end}/${remote.size}`);
+      if (req.method === 'HEAD') return res.end();
+      return remote.stream.pipe(res);
+    }
+
+    if (conteudo.range) res.status(206).set({ 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${conteudo.range.start}-${conteudo.range.end}/${conteudo.size}`, 'Content-Length': String(conteudo.range.length) });
+    else if (conteudo.size) res.set({ 'Accept-Ranges': 'bytes', 'Content-Length': String(conteudo.size) });
+    if (conteudo.etag) res.set('ETag', conteudo.etag);
+    if (conteudo.modifiedAt) res.set('Last-Modified', new Date(conteudo.modifiedAt).toUTCString());
+    if (req.method === 'HEAD') return res.end();
     return conteudo.stream.pipe(res);
   } catch (error) {
     return next(error);
   }
+}
+
+export async function gerarUrlConteudoLivro(req, res, next) {
+  try {
+    const conteudo = await obterConteudoLivro(req.params.id);
+    if (!conteudo) return res.status(404).json({ message: 'Livro nao encontrado.' });
+    if (!conteudo.storageProvider?.signedReadUrl) return res.status(501).json({ message: 'Entrega assinada não suportada por este provider.' });
+    const url = await conteudo.storageProvider.signedReadUrl(conteudo.storageKey);
+    return res.json({ url, expiresIn: conteudo.storageProvider.signedUrlTtl });
+  } catch (error) { return next(error); }
 }
 
 export async function listarPaginasLeitura(req, res, next) {
@@ -229,6 +266,16 @@ export async function listarPaginasLeitura(req, res, next) {
     const paginas = await listarPaginasLivro(req.params.id);
     if (!paginas) return res.status(422).json({ message: 'Paginação indisponível para este arquivo.' });
     return res.json(paginas);
+  } catch (error) { return next(error); }
+}
+
+export async function obterManifestoLeituraController(req, res, next) {
+  try {
+    const manifest = await obterManifestoLeitura(req.params.id);
+    if (!manifest) return res.status(404).json({ message: 'Livro nao encontrado.' });
+    const etag = `"${createHash('sha256').update(JSON.stringify(manifest)).digest('hex')}"`;
+    if (req.headers['if-none-match'] === etag) return res.status(304).set('ETag', etag).end();
+    return res.set({ ETag: etag, 'Cache-Control': 'private, max-age=300', Vary: 'Cookie' }).json(manifest);
   } catch (error) { return next(error); }
 }
 
@@ -252,8 +299,10 @@ export async function servirCapaLivro(req, res, next) {
   try {
     const capa = await obterCapaLivro(req.params.id);
     if (!capa) return res.status(404).end();
-    const cacheControl = req.query.v ? 'public, max-age=31536000, immutable' : 'public, max-age=3600, must-revalidate';
-    return res.type(capa.mimeType).set('Cache-Control', cacheControl).send(capa.data);
+    const etag = `"${createHash('sha256').update(capa.data).digest('hex')}"`;
+    if (req.headers['if-none-match'] === etag) return res.status(304).set('ETag', etag).end();
+    const cacheControl = req.query.v ? 'private, max-age=31536000, immutable' : 'private, max-age=3600, must-revalidate';
+    return res.type(capa.mimeType).set({ 'Cache-Control': cacheControl, ETag: etag, 'Content-Length': String(capa.data.length), Vary: 'Cookie' }).send(capa.data);
   } catch (error) {
     return next(error);
   }

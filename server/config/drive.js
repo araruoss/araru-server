@@ -51,7 +51,7 @@ export const env = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
   googleRedirectUri:
     process.env.GOOGLE_REDIRECT_URI ||
-    'http://localhost:3001/api/auth/callback',
+    'http://localhost:3001/api/v1/auth/callback',
   driveFolderId: process.env.DRIVE_FOLDER_ID,
   driveFoldersConfigPath:
     resolveProjectPath(process.env.DRIVE_FOLDERS_CONFIG, path.relative(projectRoot, path.join(dataDir, 'drive-folders.json'))),
@@ -85,6 +85,14 @@ export const env = {
   useMockData: String(process.env.USE_MOCK_DATA || 'false') === 'true'
 };
 
+env.storageProvider = process.env.STORAGE_PROVIDER || 'local';
+env.r2 = {
+  endpoint: process.env.R2_ENDPOINT || '', accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+  secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '', bucket: process.env.R2_BUCKET || '',
+  region: process.env.R2_REGION || 'auto', publicUrl: process.env.R2_PUBLIC_URL || '', signedUrlTtl: Number(process.env.R2_SIGNED_URL_TTL || 300), prefix: process.env.R2_PREFIX || ''
+};
+env.r2Configured = Boolean(env.r2.endpoint && env.r2.accessKeyId && env.r2.secretAccessKey && env.r2.bucket);
+
 export function validateEnvironment() {
   if (!valorConfigurado(env.databaseUrl)) {
     logger.warn('config.database.url_missing', { expected: 'DATABASE_URL' });
@@ -96,6 +104,7 @@ export function validateEnvironment() {
     logger.warn('config.cookie.same_site_none_without_secure');
   }
   if (env.hasWildcardOrigin) logger.warn('config.cors.wildcard_ignored_with_credentials');
+  if (env.storageProvider === 'r2' && !env.r2Configured) logger.warn('config.r2.incomplete', { expected: ['R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET'] });
   if (env.useMockData) {
     logger.info('config.mock_mode.enabled');
     return;

@@ -1,10 +1,53 @@
 openapi: 3.1.0
 info:
   title: Araru Server API
-  version: 0.1.0
-  description: Initial contract entrypoint. Endpoint schemas will be expanded without requiring client imports from server source.
+  version: 1.0.0
+  description: Stable Araru API v1. Product endpoints are exclusively exposed under /api/v1.
 servers:
   - url: http://localhost:3001/api
+    description: Araru API base; product paths are versioned under /v1
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: araru_session
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+    Pagination:
+      type: object
+      required: [page, pageSize, total, pages]
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+        pages: { type: integer }
+    PageResponse:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: { type: array, items: {} }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+    Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+    PageSize: { name: pageSize, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 30 } }
+  responses:
+    Paged: { description: Paginated resource collection, content: { application/json: { schema: { $ref: '#/components/schemas/PageResponse' } } } }
+    Unauthorized: { description: Authentication required, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Permission denied, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Conflict, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 paths:
   /health:
     get:
@@ -12,3 +55,523 @@ paths:
       responses:
         '200':
           description: Server is healthy
+  /v1/system/info:
+    get:
+      operationId: getV1SystemInfo
+      summary: Public server capabilities
+      responses:
+        '200': { description: Server and capability information }
+  /v1/system/status:
+    get:
+      operationId: getV1SystemStatus
+      summary: Public setup status
+      responses:
+        '200': { description: Current setup status }
+  /v1/client-config:
+    get:
+      operationId: getClientConfig
+      summary: Safe client configuration
+      responses:
+        '200': { description: Configuration safe for clients }
+  /v1/session:
+    get:
+      operationId: getSession
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200': { description: Current user and profile }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/auth/me:
+    get:
+      operationId: getAuthMe
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Current authenticated user } }
+  /v1/setup:
+    post:
+      operationId: completeSetup
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '201': { description: Setup completed }, '409': { $ref: '#/components/responses/Conflict' } }
+  /v1/auth/login:
+    post:
+      operationId: login
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [username, password] } } } }
+      responses: { '200': { description: Session created }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      security: [{ sessionCookie: [] }]
+      responses: { '204': { description: Session closed } }
+  /v1/auth/change-password:
+    post:
+      operationId: changePassword
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Password changed } }
+  /v1/access/session:
+    get:
+      operationId: getAccessSession
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Current session }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/libraries:
+    get:
+      operationId: listLibraries
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/libraries/{id}:
+    get:
+      operationId: getLibrary
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Library details }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/works:
+    get:
+      operationId: listWorks
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: series, in: query, schema: { type: string } }
+        - { name: libraryId, in: query, schema: { type: string } }
+        - { name: author, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string } }
+        - { name: format, in: query, schema: { type: string, enum: [pdf, epub, mobi, cbz, cbr] } }
+        - { name: favorite, in: query, schema: { type: boolean } }
+        - { name: completed, in: query, schema: { type: boolean } }
+        - { name: sort, in: query, schema: { type: string, enum: [title, createdAt, updatedAt, author], default: title } }
+        - { name: order, in: query, schema: { type: string, enum: [asc, desc], default: asc } }
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/works/{id}:
+    get:
+      operationId: getWork
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Work details }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/works/recent:
+    get:
+      operationId: getRecentWorks
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Recently added works } }
+  /v1/series:
+    get:
+      operationId: listSeries
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/series/{id}:
+    get:
+      operationId: getSeries
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Series details } }
+  /v1/series/{id}/works:
+    get:
+      operationId: listSeriesWorks
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/authors:
+    get:
+      operationId: listAuthors
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/authors/{id}:
+    get:
+      operationId: getAuthor
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Author details } }
+  /v1/authors/{id}/works:
+    get:
+      operationId: listAuthorWorks
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/search:
+    get:
+      operationId: search
+      security: [{ sessionCookie: [] }]
+      parameters: [{ name: q, in: query, required: true, schema: { type: string } }]
+      responses: { '200': { description: Grouped search results } }
+  /v1/home:
+    get:
+      operationId: getHome
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Home sections } }
+  /v1/auth/drive/login:
+    get:
+      operationId: startDriveLogin
+      responses: { '200': { description: Drive login status }, '302': { description: OAuth redirect } }
+  /v1/auth/callback:
+    get:
+      operationId: driveAuthCallback
+      parameters: [{ name: code, in: query, required: true, schema: { type: string } }]
+      responses: { '302': { description: Redirect after OAuth } }
+  /v1/auth/drive/logout:
+    post:
+      operationId: logoutDrive
+      security: [{ sessionCookie: [] }]
+      responses: { '204': { description: Drive credentials removed } }
+  /v1/works/{id}/content:
+    get:
+      operationId: streamWorkContent
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { name: Range, in: header, schema: { type: string } }]
+      responses: { '200': { description: File stream }, '206': { description: Partial content }, '416': { description: Invalid range } }
+  /v1/works/{id}/content/url:
+    get:
+      operationId: getWorkContentUrl
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Content URL } }
+  /v1/works/{id}/cover:
+    get:
+      operationId: getWorkCover
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Cover image } }
+  /v1/works/{id}/pages:
+    get:
+      operationId: listWorkPages
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Reader pages } }
+  /v1/works/{id}/manifest:
+    get:
+      operationId: getWorkReaderManifest
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Versioned reader manifest }, '304': { description: Manifest unchanged }, '404': { $ref: '#/components/responses/NotFound' } }
+  /v1/works/{id}/pages/{page}:
+    get:
+      operationId: getWorkPage
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { name: page, in: path, required: true, schema: { type: integer } }]
+      responses: { '200': { description: Reader page } }
+  /v1/works/{id}/resources/mobi/{recindex}:
+    get:
+      operationId: getMobiResource
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }, { name: recindex, in: path, required: true, schema: { type: integer } }]
+      responses: { '200': { description: MOBI resource } }
+  /v1/works/{id}/metadata:
+    get:
+      operationId: getWorkMetadata
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Work metadata } }
+  /v1/admin/works/{id}/metadata:
+    post:
+      operationId: updateWorkMetadata
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated metadata } }
+  /v1/admin/works/{id}/enrich:
+    post:
+      operationId: enrichWorkMetadata
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '202': { description: Enrichment queued } }
+  /v1/admin/metadata/reviews:
+    get:
+      operationId: listMetadataReviews
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Metadata reviews } }
+  /v1/profiles:
+    get:
+      operationId: listProfiles
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Profiles } }
+    post:
+      operationId: createProfile
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Created profile } }
+  /v1/profiles/{id}:
+    put:
+      operationId: updateProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated profile } }
+    delete:
+      operationId: deleteProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: Profile deleted } }
+  /v1/profiles/{id}/select:
+    post:
+      operationId: selectProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Active profile selected } }
+  /v1/reading/continue:
+    get:
+      operationId: getContinueReading
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Continue reading items } }
+  /v1/history:
+    get:
+      operationId: getHistory
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/favorites:
+    get:
+      operationId: listFavorites
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { $ref: '#/components/responses/Paged' } }
+  /v1/works/{id}/reading-state:
+    get:
+      operationId: getWorkReadingState
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Reading state } }
+    put:
+      operationId: putWorkReadingState
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: Updated reading state }, '409': { $ref: '#/components/responses/Conflict' } }
+  /v1/works/{id}/favorite:
+    put:
+      operationId: favoriteWork
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated favorites } }
+    delete:
+      operationId: unfavoriteWork
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated favorites } }
+  /v1/admin/system/status:
+    get:
+      operationId: getAdminSystemStatus
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Administrative system status }, '403': { $ref: '#/components/responses/Forbidden' } }
+  /v1/admin/system/metrics:
+    get:
+      operationId: getAdminSystemMetrics
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Administrative runtime metrics } }
+  /v1/admin/storage/providers:
+    get:
+      operationId: listStorageProviders
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Provider capabilities without secrets } }
+    post:
+      operationId: saveStorageProviderSettings
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Provider settings saved without secrets } }
+  /v1/admin/storage/providers/{id}:
+    get:
+      operationId: getStorageProvider
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Provider capabilities } }
+    patch:
+      operationId: patchStorageProvider
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Provider settings saved } }
+    delete:
+      operationId: deleteStorageProvider
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: Settings deleted } }
+  /v1/admin/storage/providers/{id}/test:
+    post:
+      operationId: testStorageProvider
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Provider health result } }
+  /v1/admin/settings:
+    get:
+      operationId: getAdminSettings
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: System settings } }
+    patch:
+      operationId: patchAdminSettings
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: Updated settings } }
+  /v1/admin/settings/schema:
+    get:
+      operationId: getAdminSettingsSchema
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Safe settings schema } }
+  /v1/admin/users:
+    get:
+      operationId: listAdminUsers
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Users } }
+    post:
+      operationId: createAdminUser
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Created user } }
+  /v1/admin/profiles:
+    get:
+      operationId: listAdminProfiles
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Profiles } }
+    post:
+      operationId: createAdminProfile
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Created profile } }
+  /v1/admin/profiles/{id}:
+    patch:
+      operationId: patchAdminProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated profile } }
+    delete:
+      operationId: deleteAdminProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: Profile deleted } }
+  /v1/admin/libraries:
+    get:
+      operationId: listAdminLibraries
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Libraries } }
+    post:
+      operationId: createAdminLibrary
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Created library } }
+  /v1/admin/libraries/scan:
+    post:
+      operationId: scanAdminLibraries
+      security: [{ sessionCookie: [] }]
+      responses: { '202': { description: Catalog reconciliation queued }, '401': { $ref: '#/components/responses/Unauthorized' } }
+  /v1/admin/libraries/{id}:
+    get:
+      operationId: getAdminLibrary
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Library } }
+    patch:
+      operationId: patchAdminLibrary
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated library } }
+    delete:
+      operationId: deleteAdminLibrary
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: Library deleted } }
+  /v1/admin/users/{id}:
+    get:
+      operationId: getAdminUser
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: User } }
+    patch:
+      operationId: patchAdminUser
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Updated user } }
+    delete:
+      operationId: deleteAdminUser
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '204': { description: User deleted } }
+  /v1/admin/overview:
+    get:
+      operationId: getAdminOverview
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Administrative overview } }
+  /v1/admin/audit:
+    get:
+      operationId: listAdminAudit
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Administrative audit log } }
+  /v1/admin/jobs:
+    get:
+      operationId: listAdminJobs
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Jobs and leases } }
+  /v1/admin/jobs/{id}/cancel:
+    post:
+      operationId: cancelAdminJob
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Cancellation result } }
+  /v1/admin/jobs/{id}/retry:
+    post:
+      operationId: retryAdminJob
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses: { '200': { description: Retry result } }
+  /v1/admin/jobs/metrics:
+    get:
+      operationId: getAdminJobMetrics
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Job metrics } }
+  /v1/admin/metadata/export:
+    get:
+      operationId: exportAdminMetadata
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Metadata export } }
+  /v1/admin/metadata/import:
+    post:
+      operationId: importAdminMetadata
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Metadata import result } }
+  /v1/admin/metadata/review:
+    get:
+      operationId: listMetadataReview
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Metadata review queue } }
+  /v1/admin/covers/status:
+    get:
+      operationId: getAdminCoverCacheStatus
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Cover cache counters } }
+  /v1/admin/covers/generate-missing:
+    post:
+      operationId: generateMissingCovers
+      security: [{ sessionCookie: [] }]
+      responses: { '202': { description: Cover generation jobs queued } }
+  /v1/admin/covers/rebuild:
+    post:
+      operationId: rebuildCoverCache
+      security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { mode: { type: string, enum: [missing, failed, stale, force] }, confirmed: { type: boolean } } } } } }
+      responses: { '202': { description: Cover rebuild jobs queued }, '400': { description: Invalid mode or missing confirmation } }
+  /v1/admin/covers/retry-failed:
+    post:
+      operationId: retryFailedCovers
+      security: [{ sessionCookie: [] }]
+      responses: { '202': { description: Failed cover jobs queued } }
+  /v1/admin/backup:
+    get:
+      operationId: downloadAdminBackup
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Compressed PostgreSQL backup } }
+  /v1/admin/backup/verify:
+    post:
+      operationId: verifyAdminBackup
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Backup verification result } }
+  /v1/admin/backup/restore:
+    post:
+      operationId: restoreAdminBackup
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Backup restore result } }
+  /v1/admin/security:
+    get:
+      operationId: getAdminSecurity
+      security: [{ sessionCookie: [] }]
+      responses: { '200': { description: Safe security configuration summary } }
+  /live:
+    get:
+      operationId: getLiveness
+      responses: { '200': { description: Process liveness } }
+  /ready:
+    get:
+      operationId: getReadiness
+      responses: { '200': { description: Dependency readiness }, '503': { description: Dependency unavailable } }
+  /v1/admin/storage/r2/upload-url:
+    post:
+      operationId: createR2UploadUrl
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Temporary signed upload URL } }
+  /v1/admin/storage/r2/complete:
+    post:
+      operationId: completeR2Upload
+      security: [{ sessionCookie: [] }]
+      responses: { '201': { description: Registered R2 object } }

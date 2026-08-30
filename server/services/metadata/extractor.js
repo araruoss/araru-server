@@ -1,15 +1,31 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import JSZip from 'jszip';
 import { env } from '../../config/drive.js';
 import { cleanDisplayText, extractYear } from './normalizer.js';
 import { extractIsbns, isbnForms } from './isbn.js';
 
 let pdfParseModulePromise;
+const execFileAsync = promisify(execFile);
 
 async function readBuffer(asset) {
+  if (Number(asset.fileSize || 0) > env.readerMaxInMemoryBytes) {
+    const error = new Error('Este arquivo excede o limite seguro para extração em memória.');
+    error.code = 'METADATA_STREAM_REQUIRED';
+    throw error;
+  }
   if (typeof asset.getBuffer === 'function') return asset.getBuffer();
-  if (asset.filePath) return fs.readFile(asset.filePath);
+  if (asset.filePath) {
+    const info = await fs.stat(asset.filePath);
+    if (info.size > env.readerMaxInMemoryBytes) {
+      const error = new Error('Este arquivo excede o limite seguro para extração em memória. O processamento será retomado por um worker compatível.');
+      error.code = 'METADATA_STREAM_REQUIRED';
+      throw error;
+    }
+    return fs.readFile(asset.filePath);
+  }
   return null;
 }
 
@@ -25,6 +41,7 @@ function firstUsefulLine(text = '') {
 }
 
 async function extractPdf(asset) {
+  if (Number(asset.fileSize || 0) > env.readerMaxInMemoryBytes && asset.filePath) return extractLargePdf(asset);
   const buffer = await readBuffer(asset);
   if (!buffer) return {};
   let parser;
@@ -58,6 +75,26 @@ async function extractPdf(asset) {
   } finally {
     await parser?.destroy().catch(() => {});
   }
+}
+
+async function extractLargePdf(asset) {
+  const timeout = Number(env.metadataTimeoutMs || 30_000);
+  const { stdout: infoText } = await execFileAsync('pdfinfo', [asset.filePath], { timeout, maxBuffer: 256 * 1024 });
+  const value = (key) => infoText.match(new RegExp(`^${key}:\\s*(.*)$`, 'mi'))?.[1]?.trim() || '';
+  let text = '';
+  try {
+    ({ stdout: text } = await execFileAsync('pdftotext', ['-f', '1', '-l', String(Math.max(1, env.metadataPdfPages)), '-layout', asset.filePath, '-'], { timeout, maxBuffer: 2 * 1024 * 1024 }));
+  } catch { /* PDFs with protected text still expose pdfinfo metadata. */ }
+  const combined = [text, value('Title'), value('Author'), value('Subject'), value('Keywords')].filter(Boolean).join('\n');
+  const isbns = extractIsbns(combined);
+  return {
+    nome: cleanDisplayText(value('Title')) || firstUsefulLine(text),
+    autor: value('Author') ? [cleanDisplayText(value('Author'))] : [], editora: '', descricao: cleanDisplayText(value('Subject')),
+    ano: extractYear(value('CreationDate')), ...isbnForms(isbns[0]), isbn: isbns[0] || '', numeroPaginas: Number(value('Pages')) || null,
+    idioma: '', tags: [value('Subject'), value('Keywords')].filter(Boolean).flatMap((item) => item.split(/[;,]/).map(cleanDisplayText).filter(Boolean)),
+    evidence: { pdfMetadata: Boolean(value('Title') || value('Author')), pdfText: Boolean(text), internalIsbn: Boolean(isbns[0]), streamed: true },
+    extractedText: text.slice(0, 30000)
+  };
 }
 
 function xmlValue(xml, tag) {

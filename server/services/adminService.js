@@ -6,9 +6,10 @@ import { obterResumoIndice } from './libraryIndexService.js';
 import { estadoJobsManutencao } from './maintenanceJobs.js';
 import { estadoFilaEnriquecimento } from './metadataService.js';
 
-export async function recordAdminAudit(actorUserId, action, targetType = null, targetId = null, detail = {}) {
+export async function recordAdminAudit(actorUserId, action, targetType = null, targetId = null, detail = {}, client = null) {
   const safeDetail = Object.fromEntries(Object.entries(detail || {}).filter(([key]) => !/password|secret|token|hash/i.test(key)));
-  await query('INSERT INTO admin_audit_log(actor_user_id,action,target_type,target_id,detail) VALUES($1,$2,$3,$4,$5::jsonb)', [actorUserId || null, action, targetType, targetId ? String(targetId) : null, JSON.stringify(safeDetail)]);
+  const executor = client || { query };
+  await executor.query('INSERT INTO admin_audit_log(actor_user_id,action,target_type,target_id,detail) VALUES($1,$2,$3,$4,$5::jsonb)', [actorUserId || null, action, targetType, targetId ? String(targetId) : null, JSON.stringify(safeDetail)]);
 }
 
 export async function adminOverview() {

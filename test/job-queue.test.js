@@ -59,3 +59,28 @@ test('persiste histórico e recupera trabalho interrompido após reinício', asy
   assert.equal((await queue.history({ type }))[0].status, 'completed');
   await query('DELETE FROM background_jobs WHERE type=$1', [type]);
 });
+
+test('dois workers fazem claim concorrente sem executar o mesmo job duas vezes', async () => {
+  await migratePostgres();
+  const type = `claim-test-${randomUUID()}`;
+  const first = new JobQueue({ concurrency: 3 });
+  const second = new JobQueue({ concurrency: 3 });
+  const executed = [];
+  const handler = async (payload) => { executed.push(payload.id); await new Promise((resolve) => setTimeout(resolve, 20)); return payload.id; };
+  const previousProcessJobs = process.env.ARARU_PROCESS_JOBS;
+  process.env.ARARU_PROCESS_JOBS = 'false';
+  first.register(type, handler); second.register(type, handler);
+  const jobs = Array.from({ length: 8 }, (_, index) => first.enqueue(type, { id: index }, { dedupeKey: `${type}:${index}` }));
+  while ((await query('SELECT COUNT(*)::int AS count FROM background_jobs WHERE type=$1', [type])).rows[0].count < 8) await new Promise((resolve) => setTimeout(resolve, 5));
+  process.env.ARARU_PROCESS_JOBS = 'true';
+  first.process(); second.process();
+  await Promise.allSettled(jobs);
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline && executed.length < 8) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(executed.length, 8);
+  assert.equal(new Set(executed).size, 8);
+  const rows = await query('SELECT status,COUNT(*)::int AS count FROM background_jobs WHERE type=$1 GROUP BY status', [type]);
+  assert.equal(rows.rows.find((row) => row.status === 'completed')?.count, 8);
+  await query('DELETE FROM background_jobs WHERE type=$1', [type]);
+  if (previousProcessJobs === undefined) delete process.env.ARARU_PROCESS_JOBS; else process.env.ARARU_PROCESS_JOBS = previousProcessJobs;
+});

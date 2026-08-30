@@ -32,7 +32,23 @@ services:
       FRONTEND_URL: http://localhost:5173
       ALLOWED_ORIGINS: http://localhost:5173
       LOCAL_LIBRARY_DIR: /library
+      ARARU_PROCESS_JOBS: ${ARARU_PROCESS_JOBS:-true}
     ports: ["3001:3001"]
+    volumes:
+      - ${ARARU_LIBRARY_PATH:-./library}:/library:ro
+      - server-data:/app/storage
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  worker:
+    profiles: ["scale"]
+    build: .
+    command: npm run worker
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://araru:araru@postgres:5432/araru
+      REDIS_URL: redis://redis:6379
+      ARARU_PROCESS_JOBS: "true"
     volumes:
       - ${ARARU_LIBRARY_PATH:-./library}:/library:ro
       - server-data:/app/storage

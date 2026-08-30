@@ -14,8 +14,6 @@ import { logger } from './logger.js';
 import { sincronizarObraArquivo } from './workService.js';
 import { bookExists, findBook, findBookByIsbn, listBooks, listBooksForReview, listCategories, saveBook as saveBookPostgres, updateLastRead, upsertCategory } from './metadataRepository.js';
 
-let pdfParseModulePromise;
-
 const colors = ['#4F46E5', '#059669', '#DB2777', '#EA580C', '#0891B2', '#7C3AED'];
 
 const cache = new Map();
@@ -57,27 +55,6 @@ function normalizeIsbn(value = '') {
 
 export function extractISBN(texto = '') {
   return extractValidISBN(texto) || null;
-}
-
-async function loadPdfParse() {
-  if (!pdfParseModulePromise) {
-    pdfParseModulePromise = import('pdf-parse');
-  }
-
-  const mod = await pdfParseModulePromise;
-  return mod.default || mod;
-}
-
-async function readBufferFromAsset(asset) {
-  if (typeof asset.getBuffer === 'function') {
-    return asset.getBuffer();
-  }
-
-  if (asset.filePath) {
-    return fs.readFile(asset.filePath);
-  }
-
-  return null;
 }
 
 async function fetchJson(url) {
@@ -173,46 +150,6 @@ function parseOpenLibraryBook(book) {
     subcategorias: (book.subjects || []).map((item) => item.name).filter(Boolean),
     tags: (book.subjects || []).map((item) => item.name).filter(Boolean)
   };
-}
-
-async function extrairMetadadosPdf(asset) {
-  const buffer = await readBufferFromAsset(asset);
-  if (!buffer) {
-    return {};
-  }
-
-  let parser;
-  try {
-    const { PDFParse } = await loadPdfParse();
-    parser = new PDFParse({ data: buffer });
-    // O worker interno do pdfjs nao suporta executar essas operacoes em
-    // paralelo sobre o mesmo documento.
-    const infoData = await parser.getInfo();
-    const textData = await parser.getText();
-    const info = infoData.info || {};
-    const text = textData.text || '';
-    const tags = [];
-
-    if (info.Subject) tags.push(...String(info.Subject).split(/[;,]/));
-    if (info.Keywords) tags.push(...String(info.Keywords).split(/[;,]/));
-
-    return {
-      nome: info.Title || '',
-      autor: info.Author ? [info.Author] : [],
-      descricao: info.Subject || '',
-      numeroPaginas: infoData.total || null,
-      idioma: info.Language || '',
-      isbn: extractISBN([text, info.Title, info.Subject, info.Keywords].filter(Boolean).join(' ')),
-      // Keywords sao tags; subcategorias sao controladas pela estrutura de pastas.
-      subcategorias: [],
-      tags: tags.map((item) => item.trim()).filter(Boolean)
-    };
-  } catch (error) {
-    logger.warn('metadata.pdf.extraction_failed', { bookId: asset.id, file: asset.filePath || asset.nome, error });
-    return {};
-  } finally {
-    await parser?.destroy().catch(() => {});
-  }
 }
 
 async function carregarOverridesManuais() {

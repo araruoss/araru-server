@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from './logger.js';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 const startedAt = Date.now();
 let requests = 0;
@@ -9,6 +10,9 @@ let totalDurationMs = 0;
 const statuses = {};
 const routes = new Map();
 const recentDurations = [];
+const storageMetrics = { requests: 0, failures: 0, bytes: 0, rangeRequests: 0, rangeFailures: 0, totalDurationMs: 0 };
+const eventLoop = monitorEventLoopDelay({ resolution: 20 });
+eventLoop.enable();
 
 function percentile(values, ratio) {
   if (!values.length) return 0;
@@ -49,6 +53,11 @@ export function metricsMiddleware(req, res, next) {
 }
 
 export function registrarErro() { errors += 1; }
+export function registrarStorageMetric({ durationMs = 0, bytes = 0, range = false, failed = false } = {}) {
+  storageMetrics.requests += 1; storageMetrics.totalDurationMs += Number(durationMs) || 0; storageMetrics.bytes += Number(bytes) || 0;
+  if (range) storageMetrics.rangeRequests += 1;
+  if (failed) { storageMetrics.failures += 1; if (range) storageMetrics.rangeFailures += 1; }
+}
 
 export function obterMetricasRuntime() {
   const memory = process.memoryUsage();
@@ -63,6 +72,8 @@ export function obterMetricasRuntime() {
       maxRecent: Number((Math.max(0, ...recentDurations)).toFixed(2))
     },
     memoryBytes: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external },
+    storage: { ...storageMetrics, averageDurationMs: storageMetrics.requests ? Number((storageMetrics.totalDurationMs / storageMetrics.requests).toFixed(2)) : 0 },
+    eventLoopLagMs: { mean: Number((eventLoop.mean / 1e6).toFixed(2)), p95: Number((eventLoop.percentile(95) / 1e6).toFixed(2)), max: Number((eventLoop.max / 1e6).toFixed(2)) },
     routes: [...routes.entries()].map(([route, value]) => ({
       route, requests: value.requests, errors: value.errors,
       averageDurationMs: Number((value.totalDurationMs / value.requests).toFixed(2)),

@@ -8,7 +8,7 @@ test('callback OAuth permanece no backend e redireciona para o frontend configur
   const directory = await mkdtemp(path.join(os.tmpdir(), 'araru-oauth-'));
   Object.assign(process.env, {
     FRONTEND_URL: 'https://biblioteca.example.com',
-    GOOGLE_REDIRECT_URI: 'https://api.biblioteca.example.com/api/auth/callback',
+    GOOGLE_REDIRECT_URI: 'https://api.biblioteca.example.com/api/v1/auth/callback',
     APP_ACCESS_SECRET: 'oauth-test-secret',
     ENABLE_GOOGLE_DRIVE: 'false'
   });
@@ -27,7 +27,7 @@ test('callback OAuth permanece no backend e redireciona para o frontend configur
       (error) => { forwardedError = error; }
     );
     assert.equal(forwardedError, null);
-    assert.equal(env.googleRedirectUri, 'https://api.biblioteca.example.com/api/auth/callback');
+  assert.equal(env.googleRedirectUri, 'https://api.biblioteca.example.com/api/v1/auth/callback');
     assert.equal(redirect, 'https://biblioteca.example.com/?auth=success');
   } finally {
     oauth2Client.getToken = originalGetToken;

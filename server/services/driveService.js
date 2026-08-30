@@ -1,11 +1,11 @@
 import fs from 'fs/promises';
-import { createWriteStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { pipeline } from 'stream/promises';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { createDriveClient, env, hasDriveConfig, hasGoogleApiKey, hasGoogleCredentials } from '../config/drive.js';
 import {
   atualizarCategoriaPersistida,
@@ -19,6 +19,9 @@ import { obterEstadoSincronizacao, salvarEstadoSincronizacao } from './drivePers
 import { logger } from './logger.js';
 import { ensureCacheCapacity, registerCover } from './cacheService.js';
 import { breakerFor } from './circuitBreaker.js';
+import { getStorageProvider } from '../storage/index.js';
+import { normalizeRange } from '../storage/storageProvider.js';
+import { query } from '../database/postgres.js';
 
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
 const FORMATOS_SUPORTADOS = new Set(['pdf', 'epub', 'mobi', 'cbz', 'cbr']);
@@ -27,6 +30,20 @@ const cache = new Map();
 const execFileAsync = promisify(execFile);
 let reconciliacaoCatalogo;
 const driveRequest = (task) => breakerFor('google-drive').execute(task);
+
+// API v1 addresses a logical work (ISBN/file hash), while the legacy
+// storage/catalog services address the physical library file. Resolve the
+// primary file at this boundary so covers, content and reader resources keep
+// working for both identifiers.
+async function resolveLibraryFileId(id) {
+  const value = String(id || '');
+  if (!value) return value;
+  const { rows } = await query(
+    'SELECT file_id FROM work_files WHERE work_id=$1 ORDER BY is_primary DESC, file_id LIMIT 1',
+    [value]
+  );
+  return rows[0]?.file_id || value;
+}
 
 function criarLimitador(concorrencia) {
   let ativas = 0;
@@ -131,7 +148,7 @@ function formatoTemCapa(formato) {
 }
 
 function urlCapaCache(id, fingerprint = '') {
-  const base = `/api/livros/${encodeURIComponent(id)}/capa`;
+  const base = `/api/v1/works/${encodeURIComponent(id)}/cover`;
   return fingerprint ? `${base}?v=${encodeURIComponent(fingerprint)}` : base;
 }
 
@@ -170,7 +187,13 @@ function criarUrlLocal(relPath) {
   return `${baseRoute}/${encodedPath}`;
 }
 
-function normalizarLivroLocal(filePath, stats, categoria, raiz) {
+async function hashLocalFile(filePath) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function normalizarLivroLocal(filePath, stats, categoria, raiz) {
   const relPath = path.relative(raiz, filePath);
   const nomeArquivo = path.basename(filePath, path.extname(filePath));
   const previewUrl = criarUrlLocal(relPath);
@@ -192,17 +215,18 @@ function normalizarLivroLocal(filePath, stats, categoria, raiz) {
     categoryPathString: categoryPath.join('/'),
     capa: gerarCorPorTexto(relPath || nomeArquivo),
     ...(formatoTemCapa(extrairFormato(filePath))
-      ? { capaUrl: `/api/livros/${encodeURIComponent(`local-${Buffer.from(relPath).toString('base64url')}`)}/capa` }
+      ? { capaUrl: `/api/v1/works/${encodeURIComponent(`local-${Buffer.from(relPath).toString('base64url')}`)}/cover` }
       : {}),
     capaCor: gerarCorPorTexto(relPath || nomeArquivo),
     previewUrl,
-    contentUrl: `/api/livros/${encodeURIComponent(`local-${Buffer.from(relPath).toString('base64url')}`)}/conteudo`,
+    contentUrl: `/api/v1/works/${encodeURIComponent(`local-${Buffer.from(relPath).toString('base64url')}`)}/content`,
     webViewLink: previewUrl,
     thumbnailLink: null,
     modifiedTime: stats.mtime.toISOString(),
     fileSize: stats.size,
     fileMtime: stats.mtimeMs,
     fileFingerprint: `${stats.size}:${Math.floor(stats.mtimeMs)}`,
+    contentHash: await hashLocalFile(filePath),
     fonte: 'local',
     dataAdicao: stats.birthtime?.toISOString?.() || stats.mtime.toISOString()
   };
@@ -222,41 +246,46 @@ function normalizarLivroDrive(file, categoria, subcategorias = [], categoryPath 
     categoryPathString: categoryPath.join('/'),
     capa: gerarCorPorTexto(file.name || file.id),
     ...(formatoTemCapa(extrairFormato(file.name))
-      ? { capaUrl: `/api/livros/${encodeURIComponent(file.id)}/capa` }
+      ? { capaUrl: `/api/v1/works/${encodeURIComponent(file.id)}/cover` }
       : {}),
     capaCor: gerarCorPorTexto(file.name || file.id),
     previewUrl: `https://drive.google.com/file/d/${file.id}/preview`,
-    contentUrl: `/api/livros/${encodeURIComponent(file.id)}/conteudo`,
+    contentUrl: `/api/v1/works/${encodeURIComponent(file.id)}/content`,
     webViewLink: file.webViewLink,
     thumbnailLink: file.thumbnailLink,
     modifiedTime: file.modifiedTime,
     fileSize: Number(file.size || 0),
     fileMtime: file.modifiedTime || '',
     fileFingerprint: [file.id, file.modifiedTime || '', file.size || '', file.md5Checksum || ''].join(':'),
+    contentHash: file.md5Checksum ? `md5:${file.md5Checksum}` : '',
     fonte: 'drive',
     dataAdicao: file.modifiedTime || new Date().toISOString()
   };
 }
 
+function normalizarLivroR2(object) {
+  const key = String(object.key || '');
+  const filename = path.posix.basename(key);
+  const formato = extrairFormato(filename);
+  const categoryPath = key.split('/').filter(Boolean).slice(0, -1);
+  const id = `r2-${Buffer.from(key).toString('base64url')}`;
+  return { id, sourceId: key, storageProvider: 'r2', storageKey: key, source: 'r2', fonte: 'r2',
+    nome: path.basename(filename, path.extname(filename)) || 'Sem titulo', formato,
+    categoria: categoryPath[0] || '', subcategorias: categoryPath.slice(1), categoryPath, categoryPathString: categoryPath.join('/'),
+    capaUrl: formatoTemCapa(formato) ? `/api/v1/works/${encodeURIComponent(id)}/cover` : '',
+    contentUrl: `/api/v1/works/${encodeURIComponent(id)}/content`, fileSize: Number(object.size || 0), modifiedTime: object.modifiedAt,
+    fileMtime: object.modifiedAt, fileFingerprint: [object.etag || '', object.size || '', object.modifiedAt || ''].join(':'),
+    contentHash: object.checksum ? `sha256:${object.checksum}` : (object.etag ? `etag:${object.etag}` : ''),
+    mimeType: object.mimeType || mimeTypeDoFormato(formato), webViewLink: '', previewUrl: `/api/v1/works/${encodeURIComponent(id)}/content` };
+}
+
+async function listarLivrosR2() {
+  const objects = await getStorageProvider('r2').list(env.r2.prefix);
+  return objects.filter((object) => FORMATOS_SUPORTADOS.has(extrairFormato(object.key))).map(normalizarLivroR2);
+}
+
 async function listarArquivos(query) {
-  const drive = createDriveClient();
-  const arquivos = [];
-  let pageToken;
-
-  do {
-    const response = await driveRequest(() => drive.files.list({
-      q: query,
-      pageSize: 1000,
-      pageToken,
-      fields: 'nextPageToken, files(id, name, mimeType, parents, webViewLink, thumbnailLink, modifiedTime, size, md5Checksum)',
-      orderBy: 'name'
-    }));
-
-    arquivos.push(...(response.data.files || []));
-    pageToken = response.data.nextPageToken;
-  } while (pageToken);
-
-  return arquivos;
+  return getStorageProvider('drive').list(query, 1000);
 }
 
 async function listarLivrosLocais(diretorio = env.localLibraryDir, raiz = env.localLibraryDir) {
@@ -282,7 +311,7 @@ async function listarLivrosLocais(diretorio = env.localLibraryDir, raiz = env.lo
       const segmentos = relPath.split(path.sep).filter(Boolean);
       const categoria = segmentos.length > 1 ? segmentos[0] : '';
 
-      livros.push(normalizarLivroLocal(caminho, stats, categoria, raiz));
+      livros.push(await normalizarLivroLocal(caminho, stats, categoria, raiz));
     }
 
     return livros;
@@ -376,15 +405,15 @@ async function listarLivrosDriveCompleto() {
   return livros.flat();
 }
 
-async function iniciarCursorDrive(drive, mode = 'full') {
+async function iniciarCursorDrive(provider, mode = 'full') {
   if (!hasGoogleCredentials()) return;
-  const response = await driveRequest(() => drive.changes.getStartPageToken({}));
-  if (response.data.startPageToken) {
-    await salvarEstadoSincronizacao('drive', { cursor: response.data.startPageToken, mode });
+  const cursor = await provider.startPageToken();
+  if (cursor) {
+    await salvarEstadoSincronizacao('drive', { cursor, mode });
   }
 }
 
-async function resolverHierarquiaArquivoDrive(file, drive, pastasRaiz) {
+async function resolverHierarquiaArquivoDrive(file, provider, pastasRaiz) {
   const roots = new Map(pastasRaiz.map((folder) => [folder.id, folder]));
   const names = [];
   const visited = new Set();
@@ -399,8 +428,7 @@ async function resolverHierarquiaArquivoDrive(file, drive, pastasRaiz) {
       const categoryPath = root.categoria ? [root.categoria, ...caminho] : caminho;
       return { categoria, subcategorias, categoryPath };
     }
-    const response = await driveRequest(() => drive.files.get({ fileId: parentId, fields: 'id,name,parents,trashed' }));
-    const folder = response.data;
+    const folder = await provider.getFile(parentId);
     if (!folder || folder.trashed) return null;
     names.push(folder.name || '');
     parentId = folder.parents?.[0];
@@ -410,10 +438,10 @@ async function resolverHierarquiaArquivoDrive(file, drive, pastasRaiz) {
 
 async function listarLivrosDriveIncremental() {
   const state = await obterEstadoSincronizacao('drive');
-  const drive = createDriveClient();
+  const provider = getStorageProvider('drive');
   if (!state?.cursor) {
     const books = await listarLivrosDriveCompleto();
-    await iniciarCursorDrive(drive, 'full');
+    await iniciarCursorDrive(provider, 'full');
     return books;
   }
 
@@ -422,21 +450,15 @@ async function listarLivrosDriveIncremental() {
   let nextCursor = state.cursor;
   try {
     do {
-      const response = await driveRequest(() => drive.changes.list({
-        pageToken,
-        pageSize: 1000,
-        spaces: 'drive',
-        includeRemoved: true,
-        fields: 'nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,parents,trashed,webViewLink,thumbnailLink,modifiedTime,size,md5Checksum))'
-      }));
-      changes.push(...(response.data.changes || []));
-      pageToken = response.data.nextPageToken;
-      nextCursor = response.data.newStartPageToken || pageToken || nextCursor;
+      const result = await provider.listChanges(pageToken, 1000);
+      changes.push(...result.changes);
+      pageToken = null;
+      nextCursor = result.nextCursor;
     } while (pageToken);
   } catch (error) {
     if (Number(error?.code || error?.response?.status) === 410) {
       const books = await listarLivrosDriveCompleto();
-      await iniciarCursorDrive(drive, 'full-after-expired-cursor');
+      await iniciarCursorDrive(provider, 'full-after-expired-cursor');
       return books;
     }
     await salvarEstadoSincronizacao('drive', { cursor: state.cursor, mode: state.mode || 'incremental', error });
@@ -453,7 +475,7 @@ async function listarLivrosDriveIncremental() {
   // a hierarquia derivada do filesystem/Drive.
   if (changes.some((change) => change.file?.mimeType === FOLDER_MIME_TYPE)) {
     const books = await listarLivrosDriveCompleto();
-    await iniciarCursorDrive(drive, 'full-after-folder-change');
+    await iniciarCursorDrive(provider, 'full-after-folder-change');
     return books;
   }
 
@@ -469,7 +491,7 @@ async function listarLivrosDriveIncremental() {
       merged.delete(change.fileId);
       continue;
     }
-    const hierarchy = await resolverHierarquiaArquivoDrive(file, drive, roots);
+    const hierarchy = await resolverHierarquiaArquivoDrive(file, provider, roots);
     if (!hierarchy) {
       merged.delete(file.id);
       continue;
@@ -489,8 +511,13 @@ async function descobrirLivros() {
   const livrosLocais = await listarLivrosLocais();
   const reconciledSources = new Set(['local']);
 
+  if (env.storageProvider === 'r2') {
+    const livrosR2 = await listarLivrosR2();
+    return { livrosBase: livrosR2, reconciledSources: new Set(['r2']) };
+  }
+
   if (env.enableGoogleDrive && hasDriveConfig() && !hasGoogleCredentials() && !hasGoogleApiKey() && livrosLocais.length === 0) {
-    const error = new Error('Google Drive nao autenticado. Acesse /api/auth/login primeiro.');
+    const error = new Error('Google Drive nao autenticado. Acesse /api/v1/auth/login primeiro.');
     error.statusCode = 401;
     throw error;
   }
@@ -554,6 +581,8 @@ async function montarCatalogo(livrosBase) {
       fileSize: livro.fileSize,
       fileMtime: livro.fileMtime,
       fileFingerprint: livro.fileFingerprint,
+      storageProvider: livro.storageProvider,
+      storageKey: livro.storageKey,
       coverPath: persistido?.coverPath || '',
       coverFingerprint: persistido?.coverFingerprint || ''
     };
@@ -672,28 +701,47 @@ export function mimeTypeDoFormato(formato = '') {
   }[formato] || 'application/octet-stream';
 }
 
-export async function obterConteudoLivro(id, { preferirStream = false } = {}) {
+export async function obterConteudoLivro(id, { preferirStream = false, range = null, signal } = {}) {
+  const resolvedId = await resolveLibraryFileId(id);
   const livros = await obterLivros();
-  const livro = livros.find((item) => item.id === id);
+  const livro = livros.find((item) => item.id === resolvedId);
   if (!livro) return null;
 
   if (livro.fonte === 'local') {
     return { livro, filePath: livro.filePath, mimeType: mimeTypeDoFormato(livro.formato) };
   }
 
+  if (livro.fonte === 'r2' || livro.storageProvider === 'r2') {
+    return { livro, storageProvider: getStorageProvider('r2'), storageKey: livro.storageKey || livro.sourceId, mimeType: livro.mimeType || mimeTypeDoFormato(livro.formato), signal };
+  }
+
+  if (['mobi', 'cbr'].includes(livro.formato) && Number(livro.fileSize || 0) > env.readerMaxInMemoryBytes) {
+    return { livro, tooLarge: true, mimeType: mimeTypeDoFormato(livro.formato) };
+  }
+
+  if (livro.fonte === 'drive' || livro.storageProvider === 'drive') {
+    return { livro, storageProvider: getStorageProvider('drive'), storageKey: livro.driveId || livro.sourceId || livro.id, mimeType: livro.mimeType || mimeTypeDoFormato(livro.formato), providerMetadata: livro, signal };
+  }
+
   const drive = createDriveClient();
-  // CBZ e EPUB podem ser servidos e processados por stream; apenas os
-  // leitores legados de MOBI/CBR ainda exigem buffer para leitura.
-  const precisaBuffer = !preferirStream && ['mobi', 'cbr'].includes(livro.formato);
+  // Todos os formatos remotos devem permanecer em stream. MOBI/CBR são
+  // materializados em arquivo temporário pelo reader, evitando arraybuffer
+  // proporcional ao tamanho total do livro.
+  const precisaBuffer = false;
+  const selectedRange = range ? normalizeRange(range, Number(livro.fileSize || 0)) : null;
   const resposta = await driveRequest(() => drive.files.get(
     { fileId: livro.driveId || livro.id, alt: 'media' },
-    { responseType: precisaBuffer ? 'arraybuffer' : 'stream' }
+    { responseType: precisaBuffer ? 'arraybuffer' : 'stream', ...(selectedRange ? { headers: { Range: `bytes=${selectedRange.start}-${selectedRange.end}` } } : {}), ...(signal ? { signal } : {}) }
   ));
 
   return {
     livro,
     stream: precisaBuffer ? null : resposta.data,
     buffer: precisaBuffer ? Buffer.from(resposta.data) : null,
+    range: selectedRange,
+    size: Number(livro.fileSize || 0),
+    etag: livro.fileFingerprint ? `"${livro.fileFingerprint}"` : null,
+    modifiedAt: livro.modifiedTime || null,
     mimeType: mimeTypeDoFormato(livro.formato)
   };
 }
@@ -842,12 +890,13 @@ async function renderizarPrimeiraPaginaPdf(conteudo) {
     const data = await fs.readFile(`${prefixo}.jpg`);
     await ensureCacheCapacity(data.length);
     await fs.mkdir(env.coverCacheDir, { recursive: true });
-    await fs.writeFile(arquivoCache, data);
+    await escreverCapaCache(arquivoCache, data);
     await registerCover(livro.id, arquivoCache, data, 'pdf_page');
     await atualizarCapaCache(livro.id, { coverPath: arquivoCache, coverFingerprint: fingerprint, coverSource: 'pdf_page' }, livro);
     logger.info('cover.generated', { bookId: livro.id, source: 'pdf-page-1', bytes: data.length });
     return { data, mimeType: 'image/jpeg' };
-  } catch {
+  } catch (error) {
+    logger.warn('cover.pdf_render_failed', { bookId: conteudo.livro?.id, filePath: conteudo.filePath, error });
     return null;
   } finally {
     if (pastaTemporaria) await fs.rm(pastaTemporaria, { recursive: true, force: true }).catch(() => {});
@@ -863,6 +912,16 @@ function extensaoDaCapa(mimeType = '') {
 
 function fingerprintDaCapa(livro) {
   return livro.fileFingerprint || `${livro.modifiedTime || ''}:${livro.fileSize || ''}`;
+}
+
+async function escreverCapaCache(arquivo, data) {
+  const temporario = `${arquivo}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(temporario, data);
+    await fs.rename(temporario, arquivo);
+  } finally {
+    await fs.rm(temporario, { force: true }).catch(() => {});
+  }
 }
 
 async function lerCapaPersistida(livro) {
@@ -884,7 +943,7 @@ async function persistirCapaExtraida(livro, capa, source) {
   const arquivoCache = path.join(env.coverCacheDir, `${nomeCache}.${extensaoDaCapa(capa.mimeType)}`);
   await ensureCacheCapacity(capa.data.length);
   await fs.mkdir(env.coverCacheDir, { recursive: true });
-  await fs.writeFile(arquivoCache, capa.data);
+  await escreverCapaCache(arquivoCache, capa.data);
   await registerCover(livro.id, arquivoCache, capa.data, source);
   await atualizarCapaCache(livro.id, { coverPath: arquivoCache, coverFingerprint: fingerprint, coverSource: source }, livro);
   return capa;
@@ -960,7 +1019,8 @@ async function resolverCapaLivro(id) {
 }
 
 export async function obterCapaLivro(id) {
-  return backgroundJobs.enqueue('cover', { id }, {
+  const resolvedId = await resolveLibraryFileId(id);
+  return backgroundJobs.enqueue('cover', { id: resolvedId }, {
     priority: 'high', dedupeKey: `cover:${id}`, maxAttempts: 2,
     timeoutMs: Math.max(30000, env.coverRenderTimeout)
   });
@@ -975,6 +1035,7 @@ export async function renderizarLivroCompactado(conteudo, pagina = 0) {
   if (!['mobi', 'cbr'].includes(formato)) return null;
 
   const tamanho = Number(conteudo.livro.fileSize || 0);
+  if (conteudo.tooLarge) return { kind: 'too_large' };
   if (tamanho > env.readerMaxInMemoryBytes) {
     logger.warn('reader.memory_limit', { bookId: conteudo.livro.id, format: formato, size: tamanho });
     return { kind: 'too_large' };
@@ -986,14 +1047,15 @@ export async function renderizarLivroCompactado(conteudo, pagina = 0) {
     if (!arquivo) {
       pastaTemporaria = await fs.mkdtemp(path.join(os.tmpdir(), 'araru-'));
       arquivo = path.join(pastaTemporaria, `${conteudo.livro.id}.${formato}`);
-      await fs.writeFile(arquivo, conteudo.buffer);
+      if (conteudo.stream) await pipeline(conteudo.stream, createWriteStream(arquivo));
+      else if (conteudo.buffer) await fs.writeFile(arquivo, conteudo.buffer);
     }
 
     if (formato === 'mobi') {
       const modulo = await import('mobi');
       const Mobi = modulo.default || modulo;
       const livro = new Mobi(arquivo);
-      const recursosUrl = `/api/livros/${encodeURIComponent(conteudo.livro.id)}/recursos/mobi`;
+      const recursosUrl = `/api/v1/works/${encodeURIComponent(conteudo.livro.id)}/resources/mobi`;
       const html = (livro.content || '').replace(/<img\b([^>]*?)\brecindex=["'](\d+)["']([^>]*)>/gi, (_match, antes, indice, depois) => {
         const semSrc = `${antes}${depois}`.replace(/\bsrc=["'][^"']*["']/gi, '');
         return `<img${semSrc} src="${recursosUrl}/${Number(indice)}" loading="lazy" decoding="async">`;
