@@ -557,6 +557,59 @@ paths:
       operationId: getAdminSecurity
       security: [{ sessionCookie: [] }]
       responses: { '200': { description: Safe security configuration summary } }
+  /v1/admin/connections/providers:
+    get: { operationId: listConnectionProviders, security: [{ sessionCookie: [] }], responses: { '200': { description: Available connection providers } } }
+  /v1/admin/connections:
+    get: { operationId: listAdminConnections, security: [{ sessionCookie: [] }], responses: { '200': { description: Configured connections } } }
+    post: { operationId: createAdminConnection, security: [{ sessionCookie: [] }], responses: { '201': { description: Connection created } } }
+  /v1/admin/connections/{id}:
+    get: { operationId: getAdminConnection, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Connection } } }
+    patch: { operationId: updateAdminConnection, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Connection updated } } }
+    delete: { operationId: deleteAdminConnection, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '204': { description: Connection deleted } } }
+  /v1/admin/connections/{id}/test:
+    post: { operationId: testAdminConnection, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Connection test result } } }
+  /v1/admin/settings/security:
+    get: { operationId: getSecuritySettings, security: [{ sessionCookie: [] }], responses: { '200': { description: Security settings } } }
+    patch: { operationId: updateSecuritySettings, security: [{ sessionCookie: [] }], responses: { '200': { description: Security settings updated } } }
+  /v1/admin/settings/reset:
+    post: { operationId: resetAdminSettings, security: [{ sessionCookie: [] }], responses: { '200': { description: Settings reset } } }
+  /v1/admin/libraries/{id}/sources:
+    get: { operationId: listLibrarySources, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Library sources } } }
+    post: { operationId: createLibrarySource, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '201': { description: Library source created } } }
+  /v1/admin/libraries/{id}/sources/{sourceId}:
+    patch: { operationId: updateLibrarySource, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Library source updated } } }
+    delete: { operationId: deleteLibrarySource, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '204': { description: Library source deleted } } }
+  /v1/permissions:
+    get: { operationId: listPermissions, responses: { '200': { description: Permission groups } } }
+  /v1/me/permissions:
+    get: { operationId: getMyPermissions, security: [{ sessionCookie: [] }], responses: { '200': { description: Effective permissions } } }
+  /v1/admin/roles:
+    get: { operationId: listAdminRoles, security: [{ sessionCookie: [] }], responses: { '200': { description: Roles } } }
+    post: { operationId: createAdminRole, security: [{ sessionCookie: [] }], responses: { '201': { description: Role created } } }
+  /v1/admin/roles/{id}:
+    get: { operationId: getAdminRole, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Role } } }
+    patch: { operationId: updateAdminRole, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Role updated } } }
+    delete: { operationId: deleteAdminRole, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Role deleted } } }
+  /v1/admin/jobs/center:
+    get: { operationId: getJobCenter, security: [{ sessionCookie: [] }], responses: { '200': { description: Job center overview } } }
+  /v1/admin/jobs/definitions:
+    get: { operationId: listJobDefinitions, security: [{ sessionCookie: [] }], responses: { '200': { description: Job definitions } } }
+  /v1/admin/jobs/run:
+    post: { operationId: runAdminJob, security: [{ sessionCookie: [] }], responses: { '202': { description: Job queued } } }
+  /v1/admin/jobs/schedules:
+    get: { operationId: listJobSchedules, security: [{ sessionCookie: [] }], responses: { '200': { description: Job schedules } } }
+    post: { operationId: createJobSchedule, security: [{ sessionCookie: [] }], responses: { '201': { description: Job schedule created } } }
+  /v1/admin/jobs/schedules/{id}:
+    delete: { operationId: deleteJobSchedule, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Job schedule deleted } } }
+  /v1/admin/jobs/{id}:
+    get: { operationId: getAdminJob, security: [{ sessionCookie: [] }], parameters: [{ $ref: '#/components/parameters/Id' }], responses: { '200': { description: Job execution } } }
+  /v1/admin/metadata/summary:
+    get: { operationId: getMetadataSummary, security: [{ sessionCookie: [] }], responses: { '200': { description: Metadata summary } } }
+  /v1/admin/metadata/providers:
+    get: { operationId: listMetadataProviders, security: [{ sessionCookie: [] }], responses: { '200': { description: Metadata providers } } }
+  /v1/admin/security/config:
+    get: { operationId: getAdminSecurityConfig, security: [{ sessionCookie: [] }], responses: { '200': { description: Security configuration } } }
+    patch: { operationId: updateAdminSecurityConfig, security: [{ sessionCookie: [] }], responses: { '200': { description: Security configuration updated } } }
   /live:
     get:
       operationId: getLiveness

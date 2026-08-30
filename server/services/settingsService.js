@@ -10,7 +10,7 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function validateValue(key, value) {
   const definition = getSettingDefinition(key);
   if (!definition) throw Object.assign(new Error(`Configuração desconhecida: ${key}`), { statusCode: 400, code: 'VALIDATION_ERROR' });
-  if (!definition.supported && value !== definition.default) throw Object.assign(new Error(`Configuração não suportada: ${key}`), { statusCode: 422, code: 'UNSUPPORTED_SETTING' });
+  if (definition.supported === false && value !== definition.default) throw Object.assign(new Error(`Configuração não suportada: ${key}`), { statusCode: 422, code: 'UNSUPPORTED_SETTING' });
   if (definition.type === 'integer' && (!Number.isInteger(value) || value < definition.min || value > definition.max)) throw Object.assign(new Error(`Valor inválido para ${key}.`), { statusCode: 400, code: 'VALIDATION_ERROR' });
   if (definition.type === 'boolean' && typeof value !== 'boolean') throw Object.assign(new Error(`Valor inválido para ${key}.`), { statusCode: 400, code: 'VALIDATION_ERROR' });
   if (definition.type === 'enum' && !definition.values.includes(value)) throw Object.assign(new Error(`Valor inválido para ${key}.`), { statusCode: 400, code: 'VALIDATION_ERROR' });
@@ -64,7 +64,7 @@ export async function setSettings(input = {}, actorUserId, expectedVersion = nul
       const definition = getSettingDefinition(key);
       if (!isEditable(definition, key)) throw Object.assign(new Error(`Configuração gerenciada pelo ambiente: ${key}`), { statusCode: 409, code: 'MANAGED_SETTING' });
       const old = locked.rows.find((row) => row.key === key)?.value;
-      await client.query(`INSERT INTO app_settings(key,value,value_type,category,scope,scope_id,description,default_value,is_runtime,restart_required,updated_by,version) VALUES($1,$2::jsonb,$3,$4,'global','',$5,$6::jsonb,$7,$8,$9,$10,1) ON CONFLICT(key,scope,scope_id) DO UPDATE SET value=EXCLUDED.value,value_type=EXCLUDED.value_type,description=EXCLUDED.description,default_value=EXCLUDED.default_value,is_runtime=EXCLUDED.is_runtime,restart_required=EXCLUDED.restart_required,updated_by=EXCLUDED.updated_by,updated_at=NOW(),version=app_settings.version+1`, [key, JSON.stringify(value), definition.type, definition.category, definition.description || '', JSON.stringify(definition.default), definition.runtime === true, definition.restartRequired === true, actorUserId]);
+      await client.query(`INSERT INTO app_settings(key,value,value_type,category,scope,scope_id,description,default_value,is_runtime,restart_required,updated_by,version) VALUES($1,$2::jsonb,$3,$4,'global','',$5,$6::jsonb,$7,$8,$9,1) ON CONFLICT(key,scope,scope_id) DO UPDATE SET value=EXCLUDED.value,value_type=EXCLUDED.value_type,description=EXCLUDED.description,default_value=EXCLUDED.default_value,is_runtime=EXCLUDED.is_runtime,restart_required=EXCLUDED.restart_required,updated_by=EXCLUDED.updated_by,updated_at=NOW(),version=app_settings.version+1`, [key, JSON.stringify(value), definition.type, definition.category, definition.description || '', JSON.stringify(definition.default), definition.runtime === true, definition.restartRequired === true, actorUserId]);
       await recordAdminAudit(actorUserId, key.startsWith('security.') ? 'security.settings.updated' : 'settings.updated', 'setting', key, { key, oldValue: old, newValue: value, requestId }, client);
     }
     return lockedVersion + 1;
