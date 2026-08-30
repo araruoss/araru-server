@@ -25,6 +25,7 @@ export async function getSecurityConfig() {
 }
 
 export async function saveSecurityConfig(input = {}, userId, requestId = null, expectedVersion = null) {
+  expectedVersion = expectedVersion ?? null;
   const values = {};
   for (const [section, sectionValues] of Object.entries(input)) for (const [name, value] of Object.entries(sectionValues || {})) {
     if (section === 'rateLimit' && name === 'profiles') for (const [profile, profileValues] of Object.entries(value || {})) for (const [field, fieldValue] of Object.entries(profileValues || {})) values[`security.rateLimit.profiles.${profile}.${field}`] = fieldValue;
