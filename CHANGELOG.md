@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/araruoss/araru-server/compare/v0.1.0...v0.2.0) (2026-08-30)
+
+
+### Features
+
+* **server:** expand administrative platform capabilities ([ebe4a65](https://github.com/araruoss/araru-server/commit/ebe4a657557daa1ec05cb2ba6b7bb37f8d53e577))
+
+## Changelog
+
 All notable changes to Araru Server are documented here. Releases follow [Semantic Versioning](https://semver.org/) and are generated from Conventional Commits.
 
 ## Unreleased
