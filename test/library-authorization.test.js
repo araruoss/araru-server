@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { accessibleLibraryIds, filterAccessibleBooks, isAdministrator } from '../server/services/authorizationService.js';
 import { agruparCategorias, construirArvoreCategorias } from '../server/services/driveService.js';
+import { sourceMatchesBook } from '../server/services/libraryIndexService.js';
 
 const restricted = {
   roleName: 'Reader',
@@ -27,6 +28,29 @@ test('administrator remains globally scoped', () => {
 test('catalog filtering removes a work from an unauthorized library', () => {
   const books = [{ id: 'a', source: 'library-a' }, { id: 'b', source: 'library-b' }];
   assert.deepEqual(filterAccessibleBooks(books, restricted), [books[0]]);
+});
+
+test('catalog filtering prioritizes the explicit library link over the legacy provider field', () => {
+  const book = { id: 'a', source: 'library-a', libraryId: 'library-b' };
+  assert.deepEqual(filterAccessibleBooks([book], restricted), []);
+});
+
+test('source matching keeps local files inside the configured path', () => {
+  const source = { pathOrPrefix: '/library/books' };
+  assert.equal(sourceMatchesBook(source, { source: 'local', filePath: '/library/books/book.pdf' }), true);
+  assert.equal(sourceMatchesBook(source, { source: 'local', filePath: '/library/other/book.pdf' }), false);
+});
+
+test('source matching keeps remote objects inside the configured prefix', () => {
+  const source = { pathOrPrefix: 'books' };
+  assert.equal(sourceMatchesBook(source, { storageProvider: 'r2', storageKey: 'books/book.epub' }), true);
+  assert.equal(sourceMatchesBook(source, { storageProvider: 'r2', storageKey: 'covers/book.jpg' }), false);
+});
+
+test('source matching accepts a Google Drive root folder identity', () => {
+  const source = { pathOrPrefix: 'drive-root-a' };
+  assert.equal(sourceMatchesBook(source, { source: 'drive', driveRootId: 'drive-root-a', driveId: 'file-1' }), true);
+  assert.equal(sourceMatchesBook(source, { source: 'drive', driveRootId: 'drive-root-b', driveId: 'file-1' }), false);
 });
 
 test('category views can be built strictly from the already scoped catalog', () => {

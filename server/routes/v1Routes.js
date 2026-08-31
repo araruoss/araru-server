@@ -33,7 +33,7 @@ import { getSecurityConfig, saveSecurityConfig, securityOverview } from '../serv
 import { getSettings, resetSettings, setSettings, settingsSchema } from '../services/settingsService.js';
 import { listRoles, getRole, saveRole, deleteRole } from '../services/roleService.js';
 import { permissionGroups } from '../services/permissionRegistry.js';
-import { buildLibraryScope, buildWorkScope, effectiveAccess, invalidateAuthorization } from '../services/authorizationService.js';
+import { buildLibraryScope, buildWorkScope, effectiveAccess, getAccessibleLibraries, invalidateAuthorization } from '../services/authorizationService.js';
 import { listProviders, listConnections, getConnection, saveConnection, testConnection, deleteConnection, listSources, saveSource, deleteSource } from '../services/connectionService.js';
 import { jobCenterOverview, listJobDefinitions, listJobSchedules, saveJobSchedule, deleteJobSchedule, runJob, jobExecution } from '../services/jobCenterService.js';
 
@@ -86,13 +86,22 @@ router.get('/auth/me', async (req, res, next) => { if (!req.sessionContext) retu
 
 router.get('/libraries', async (_req, res, next) => {
   try {
-    const scope = await buildLibraryScope(_req.user.id, { alias: 'lf' });
-    const { rows } = await query(`SELECT COALESCE(lf.storage_provider, lf.source) AS id, COALESCE(lf.storage_provider, lf.source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM library_files lf WHERE ${scope.sql} GROUP BY 1 ORDER BY 1`, scope.values);
+    const ids = await getAccessibleLibraries(_req.user.id);
+    const values = ids === null ? [] : [ids];
+    const accessFilter = ids === null ? 'TRUE' : 'l.id = ANY($1::text[])';
+    const { rows } = await query(`SELECT l.id, l.name, l.provider AS type, COUNT(lf.id)::int AS "fileCount", COUNT(lf.id) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM libraries l LEFT JOIN library_files lf ON lf.library_id=l.id WHERE l.enabled=TRUE AND ${accessFilter} GROUP BY l.id,l.name,l.provider ORDER BY LOWER(l.name)`, values);
     return res.json({ items: rows, pagination: { page: 1, pageSize: rows.length || 1, total: rows.length, pages: rows.length ? 1 : 0 } });
   } catch (error) { return next(error); }
 });
 router.get('/libraries/:id', async (req, res, next) => {
-  try { const scope = await buildLibraryScope(req.user.id, { alias: 'lf', offset: 1 }); const { rows } = await query(`SELECT COALESCE(lf.storage_provider, lf.source) AS id, COALESCE(lf.storage_provider, lf.source) AS type, COUNT(*)::int AS "fileCount", COUNT(*) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM library_files lf WHERE COALESCE(lf.storage_provider, lf.source)=$1 AND ${scope.sql} GROUP BY 1`, [req.params.id, ...scope.values]); return rows[0] ? res.json({ data: rows[0] }) : next(errors.notFound('Library not found.')); } catch (error) { return next(error); }
+  try {
+    const ids = await getAccessibleLibraries(req.user.id);
+    const values = [req.params.id];
+    let accessFilter = 'TRUE';
+    if (ids !== null) { values.push(ids); accessFilter = 'l.id = ANY($2::text[])'; }
+    const { rows } = await query(`SELECT l.id, l.name, l.provider AS type, COUNT(lf.id)::int AS "fileCount", COUNT(lf.id) FILTER (WHERE lf.status='active')::int AS "activeFileCount" FROM libraries l LEFT JOIN library_files lf ON lf.library_id=l.id WHERE l.enabled=TRUE AND l.id=$1 AND ${accessFilter} GROUP BY l.id,l.name,l.provider`, values);
+    return rows[0] ? res.json({ data: rows[0] }) : next(errors.notFound('Library not found.'));
+  } catch (error) { return next(error); }
 });
 
 router.get('/works', async (req, res, next) => {
@@ -107,7 +116,7 @@ router.get('/works', async (req, res, next) => {
     values.push(...scope.values);
     filters.push(scope.sql);
     if (search) { values.push(`%${search}%`); filters.push(`(w.canonical_title ILIKE $${values.length} OR w.authors::text ILIKE $${values.length} OR w.description ILIKE $${values.length})`); }
-    if (req.query.libraryId) { values.push(String(req.query.libraryId)); filters.push(`EXISTS (SELECT 1 FROM work_files wf0 JOIN library_files lf0 ON lf0.id=wf0.file_id WHERE wf0.work_id=w.id AND COALESCE(lf0.storage_provider,lf0.source)=$${values.length})`); }
+    if (req.query.libraryId) { values.push(String(req.query.libraryId)); filters.push(`EXISTS (SELECT 1 FROM work_files wf0 JOIN library_files lf0 ON lf0.id=wf0.file_id WHERE wf0.work_id=w.id AND lf0.library_id=$${values.length})`); }
     if (req.query.author) { values.push(`%${String(req.query.author)}%`); filters.push(`w.authors::text ILIKE $${values.length}`); }
     if (req.query.category) { values.push(`%${String(req.query.category)}%`); filters.push(`EXISTS (SELECT 1 FROM work_files wf0 JOIN library_files lf0 ON lf0.id=wf0.file_id WHERE wf0.work_id=w.id AND (lf0.category_path::text ILIKE $${values.length} OR lf0.payload::text ILIKE $${values.length}))`); }
     if (req.query.format) { values.push(String(req.query.format).toLowerCase()); filters.push(`EXISTS (SELECT 1 FROM work_files wf0 WHERE wf0.work_id=w.id AND LOWER(wf0.format)=$${values.length})`); }
