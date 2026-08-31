@@ -22,3 +22,12 @@ test('schema PostgreSQL possui busca textual e JSONB nativos', async () => {
   assert.equal(types.get('library_files.category_path'), 'jsonb');
   assert.equal(types.get('livros.metadados_completos'), 'jsonb');
 });
+
+test('schema PostgreSQL liga arquivos indexados a uma library e source explícitas', async () => {
+  const columns = await query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='library_files' AND column_name = ANY($1::text[])", [['library_id', 'library_source_id']]);
+  assert.deepEqual(columns.rows.map((row) => row.column_name).sort(), ['library_id', 'library_source_id']);
+  const binding = await query(`SELECT l.id AS "libraryId",ls.id AS "sourceId",sc.provider
+    FROM libraries l JOIN library_sources ls ON ls.library_id=l.id
+    JOIN storage_connections sc ON sc.id=ls.connection_id WHERE l.id='library-local'`);
+  assert.ok(binding.rows.some((row) => row.libraryId === 'library-local' && row.sourceId === 'source-local' && row.provider === 'local'));
+});

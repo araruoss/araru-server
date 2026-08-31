@@ -37,7 +37,7 @@ export async function buildLibraryScope(userId, { alias = 'lf', minimumLevel = '
   if (ids === null) return { sql: 'TRUE', values: [] };
   const placeholder = `$${offset + 1}`;
   return {
-    sql: `${alias}.status = 'active' AND COALESCE(${alias}.storage_provider, ${alias}.source) = ANY(${placeholder}::text[])`,
+    sql: `${alias}.status = 'active' AND ${alias}.library_id = ANY(${placeholder}::text[])`,
     values: [ids]
   };
 }
@@ -46,7 +46,7 @@ export async function buildWorkScope(userId, { workAlias = 'w', offset = 0 } = {
   const ids = await getAccessibleLibraries(userId);
   if (ids === null) return { sql: 'TRUE', values: [] };
   return {
-    sql: `EXISTS (SELECT 1 FROM work_files scope_wf JOIN library_files scope_lf ON scope_lf.id = scope_wf.file_id WHERE scope_wf.work_id = ${workAlias}.id AND scope_lf.status = 'active' AND COALESCE(scope_lf.storage_provider, scope_lf.source) = ANY($${offset + 1}::text[]))`,
+    sql: `EXISTS (SELECT 1 FROM work_files scope_wf JOIN library_files scope_lf ON scope_lf.id = scope_wf.file_id WHERE scope_wf.work_id = ${workAlias}.id AND scope_lf.status = 'active' AND scope_lf.library_id = ANY($${offset + 1}::text[]))`,
     values: [ids]
   };
 }
@@ -55,5 +55,5 @@ export function filterAccessibleBooks(books, access) {
   const ids = accessibleLibraryIds(access);
   if (ids === null) return books;
   const allowed = new Set(ids);
-  return books.filter((book) => allowed.has(String(book.source || book.fonte || book.libraryId || '')));
+  return books.filter((book) => allowed.has(String(book.libraryId || book.source || book.fonte || '')));
 }

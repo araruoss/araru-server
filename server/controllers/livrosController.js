@@ -55,7 +55,7 @@ async function scopedBooks(req, options = {}) {
 }
 
 async function isAccessible(req, book) {
-  return Boolean(book) && await canAccessSource(req.user.id, book.source || book.fonte || book.libraryId);
+  return Boolean(book) && await canAccessSource(req.user.id, book.libraryId || book.librarySourceId || book.source || book.fonte);
 }
 
 export async function listarLivros(req, res, next) {

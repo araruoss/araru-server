@@ -444,5 +444,35 @@ export async function migratePostgres() {
       INSERT INTO schema_migrations(version,name,checksum) VALUES (12,'roles-and-rbac','araru-roles-rbac-v12') ON CONFLICT(version) DO NOTHING;
     `);
   });
+  await withTransaction(async (client) => {
+    await client.query(`
+      ALTER TABLE library_files ADD COLUMN IF NOT EXISTS library_id TEXT REFERENCES libraries(id) ON DELETE SET NULL;
+      ALTER TABLE library_files ADD COLUMN IF NOT EXISTS library_source_id TEXT REFERENCES library_sources(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS idx_library_files_library_status ON library_files(library_id,status);
+      CREATE INDEX IF NOT EXISTS idx_library_files_library_source ON library_files(library_source_id,status);
+    `);
+
+    const bindings = [
+      { provider: 'local', libraryId: 'library-local', libraryName: 'Local library', libraryProvider: 'local', connectionId: 'connection-local', sourceId: 'source-local', sourceName: 'Local source', path: env.localLibraryDir, config: { path: env.localLibraryDir } },
+      { provider: 'drive', libraryId: 'library-drive', libraryName: 'Google Drive library', libraryProvider: 'drive', connectionId: 'connection-drive', sourceId: 'source-drive', sourceName: 'Google Drive source', path: env.driveFolderId || '', config: {} },
+      { provider: 'r2', libraryId: 'library-r2', libraryName: 'Cloudflare R2 library', libraryProvider: 'r2', connectionId: 'connection-r2', sourceId: 'source-r2', sourceName: 'Cloudflare R2 source', path: env.r2.prefix || '', config: {} }
+    ];
+
+    for (const binding of bindings) {
+      await client.query('INSERT INTO libraries(id,name,provider,location,enabled,settings) VALUES($1,$2,$3,$4,TRUE,\'{}\'::jsonb) ON CONFLICT(id) DO NOTHING', [binding.libraryId, binding.libraryName, binding.libraryProvider, binding.path || null]);
+      await client.query('INSERT INTO storage_connections(id,name,provider,enabled,config) VALUES($1,$2,$3,TRUE,$4::jsonb) ON CONFLICT(id) DO NOTHING', [binding.connectionId, binding.sourceName, binding.provider === 'drive' ? 'google_drive' : binding.provider === 'r2' ? 'cloudflare_r2' : 'local', JSON.stringify(binding.config)]);
+      await client.query('INSERT INTO library_sources(id,library_id,connection_id,name,path_or_prefix,enabled,scan_mode) VALUES($1,$2,$3,$4,$5,TRUE,\'incremental\') ON CONFLICT(id) DO NOTHING', [binding.sourceId, binding.libraryId, binding.connectionId, binding.sourceName, binding.path]);
+      await client.query(`UPDATE library_files
+        SET library_id=$1::text,library_source_id=$2::text,
+            payload=payload || jsonb_build_object('libraryId',$1::text,'librarySourceId',$2::text)
+        WHERE library_id IS NULL AND (
+          COALESCE(storage_provider,source)=$3::text
+          OR ($3::text='drive' AND COALESCE(storage_provider,source)='google_drive')
+          OR ($3::text='r2' AND COALESCE(storage_provider,source)='cloudflare_r2')
+        )`, [binding.libraryId, binding.sourceId, binding.provider]);
+    }
+
+    await client.query("INSERT INTO schema_migrations(version,name,checksum) VALUES (13, 'explicit-library-source-links', 'araru-library-source-links-v13') ON CONFLICT(version) DO NOTHING");
+  });
   markPostgresInitialized();
 }

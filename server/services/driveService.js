@@ -232,11 +232,12 @@ async function normalizarLivroLocal(filePath, stats, categoria, raiz) {
   };
 }
 
-function normalizarLivroDrive(file, categoria, subcategorias = [], categoryPath = []) {
+function normalizarLivroDrive(file, categoria, subcategorias = [], categoryPath = [], storagePrefix = '') {
   return {
     id: file.id,
     sourceId: file.id,
     driveId: file.id,
+    driveRootId: storagePrefix,
     source: 'drive',
     nome: file.name?.replace(/\.(pdf|epub|mobi|cbz|cbr)$/i, '') || 'Sem titulo',
     formato: extrairFormato(file.name),
@@ -377,7 +378,7 @@ async function listarLivrosDriveCompleto() {
   const limitarRequisicoes = criarLimitador(Math.max(1, env.driveConcurrency));
   const pastasVisitadas = new Set();
 
-  async function percorrerPasta(folderId, caminho = [], categoriaRaiz = '') {
+  async function percorrerPasta(folderId, caminho = [], categoriaRaiz = '', storagePrefix = folderId) {
     if (pastasVisitadas.has(folderId)) return [];
     pastasVisitadas.add(folderId);
 
@@ -390,9 +391,9 @@ async function listarLivrosDriveCompleto() {
     const subcategorias = categoriaRaiz ? caminho : caminho.slice(1);
     const livrosDaPasta = arquivos
       .filter((file) => FORMATOS_SUPORTADOS.has(extrairFormato(file.name)))
-      .map((file) => normalizarLivroDrive(file, categoria, subcategorias, categoriaRaiz ? [categoriaRaiz, ...caminho] : caminho));
+      .map((file) => normalizarLivroDrive(file, categoria, subcategorias, categoriaRaiz ? [categoriaRaiz, ...caminho] : caminho, storagePrefix));
     const livrosDasSubpastas = await Promise.all(
-      pastas.map((pasta) => percorrerPasta(pasta.id, [...caminho, pasta.name], categoriaRaiz))
+      pastas.map((pasta) => percorrerPasta(pasta.id, [...caminho, pasta.name], categoriaRaiz, storagePrefix))
     );
 
     return [...livrosDaPasta, ...livrosDasSubpastas.flat()];
@@ -426,7 +427,7 @@ async function resolverHierarquiaArquivoDrive(file, provider, pastasRaiz) {
       const categoria = root.categoria || caminho[0] || '';
       const subcategorias = root.categoria ? caminho : caminho.slice(1);
       const categoryPath = root.categoria ? [root.categoria, ...caminho] : caminho;
-      return { categoria, subcategorias, categoryPath };
+      return { categoria, subcategorias, categoryPath, storagePrefix: root.id };
     }
     const folder = await provider.getFile(parentId);
     if (!folder || folder.trashed) return null;
@@ -496,7 +497,7 @@ async function listarLivrosDriveIncremental() {
       merged.delete(file.id);
       continue;
     }
-    merged.set(file.id, normalizarLivroDrive(file, hierarchy.categoria, hierarchy.subcategorias, hierarchy.categoryPath));
+    merged.set(file.id, normalizarLivroDrive(file, hierarchy.categoria, hierarchy.subcategorias, hierarchy.categoryPath, hierarchy.storagePrefix));
   }
   await salvarEstadoSincronizacao('drive', { cursor: nextCursor, mode: 'incremental' });
   return [...merged.values()];
@@ -594,8 +595,8 @@ async function reconciliarCatalogo() {
 
   reconciliacaoCatalogo = descobrirLivros()
     .then(async ({ livrosBase, reconciledSources }) => {
-      await sincronizarIndiceLivros(livrosBase, { reconciledSources });
-      const livros = await montarCatalogo(livrosBase);
+      const indexados = await sincronizarIndiceLivros(livrosBase, { reconciledSources });
+      const livros = await montarCatalogo(indexados);
       cacheSet('livros', livros);
       return livros;
     })

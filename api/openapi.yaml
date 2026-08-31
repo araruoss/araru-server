@@ -38,6 +38,14 @@ components:
       properties:
         items: { type: array, items: {} }
         pagination: { $ref: '#/components/schemas/Pagination' }
+    R2UploadRequest:
+      type: object
+      required: [libraryId, librarySourceId]
+      properties:
+        filename: { type: string }
+        contentType: { type: string }
+        libraryId: { type: string }
+        librarySourceId: { type: string }
   parameters:
     Id: { name: id, in: path, required: true, schema: { type: string } }
     Page: { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
@@ -622,9 +630,11 @@ paths:
     post:
       operationId: createR2UploadUrl
       security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/R2UploadRequest' } } } }
       responses: { '201': { description: Temporary signed upload URL } }
   /v1/admin/storage/r2/complete:
     post:
       operationId: completeR2Upload
       security: [{ sessionCookie: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/R2UploadRequest' }], required: [key] } } } }
       responses: { '201': { description: Registered R2 object } }

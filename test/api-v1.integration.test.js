@@ -15,6 +15,7 @@ before(async () => {
   const { query } = await import('../server/database/postgres.js');
   await migratePostgres();
   await query('TRUNCATE TABLE user_sessions, user_profiles, users, system_settings RESTART IDENTITY CASCADE');
+  await migratePostgres();
   ({ createApp: app } = await import('../server/app.js'));
   app = await app();
   const setup = await request(app).post('/api/v1/setup').send({ admin: { username: 'admin', password: 'strong-test-password' }, profile: { name: 'Principal' } });
@@ -38,8 +39,12 @@ test('NODE_ENV=test não transforma rota administrativa em endpoint público', a
 });
 
 test('expõe works, filtros, content delivery e administração em v1', async () => {
-  const works = await request(app).get('/api/v1/works').set('Cookie', cookie).query({ libraryId: 'local', format: 'pdf', favorite: 'false', completed: 'false', sort: 'title', order: 'asc' });
+  const works = await request(app).get('/api/v1/works').set('Cookie', cookie).query({ libraryId: 'library-local', format: 'pdf', favorite: 'false', completed: 'false', sort: 'title', order: 'asc' });
   assert.equal(works.status, 200); assert.ok(Array.isArray(works.body.items)); assert.ok(works.body.pagination);
+  const libraries = await request(app).get('/api/v1/libraries').set('Cookie', cookie);
+  assert.equal(libraries.status, 200); assert.ok(libraries.body.items.some((library) => library.id === 'library-local'));
+  const sources = await request(app).get('/api/v1/admin/libraries/library-local/sources').set('Cookie', cookie);
+  assert.equal(sources.status, 200); assert.ok(sources.body.data.some((source) => source.id === 'source-local'));
   assert.equal((await request(app).get('/api/v1/admin/system/status').set('Cookie', cookie)).status, 200);
   assert.equal((await request(app).get('/api/v1/admin/security').set('Cookie', cookie)).status, 200);
 });
