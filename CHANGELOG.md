@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/araruoss/araru-server/compare/v0.2.3...v0.3.0) (2026-08-31)
+
+
+### Features
+
+* **library:** link catalog files to explicit sources ([f67382b](https://github.com/araruoss/araru-server/commit/f67382bc2c797d00ab1f05fdbeff5c0781ff364e))
+
 ## [0.2.3](https://github.com/araruoss/araru-server/compare/v0.2.2...v0.2.3) (2026-08-30)
 
 
